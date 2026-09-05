@@ -74,11 +74,81 @@ class TestTelegramSendImageFile:
         assert call_kwargs.kwargs["chat_id"] == 12345
 
 
-    def test_returns_error_when_not_connected(self, adapter):
+    def test_sends_local_gif_as_animation(self, adapter, tmp_path):
+        """A local .gif must go through sendAnimation, not sendPhoto.
+
+        sendPhoto rasterizes an animated GIF to a single still frame, so
+        routing it as a photo silently kills the animation.
+        """
+        gif = tmp_path / "radar.gif"
+        gif.write_bytes(b"GIF89a" + b"\x00" * 100)
+
+        mock_msg = MagicMock()
+        mock_msg.message_id = 43
+
+        async def upload(**kwargs):
+            assert kwargs["animation"].read() == gif.read_bytes()
+            return mock_msg
+
+        adapter._bot.send_animation = AsyncMock(side_effect=upload)
+        adapter._bot.send_photo = AsyncMock()
+
+        result = _run(
+            adapter.send_image_file(
+                chat_id="12345", image_path=str(gif), caption="Radar loop",
+                reply_to="42", metadata={"thread_id": "17"},
+            )
+        )
+
+        assert result.success
+        assert result.message_id == "43"
+        adapter._bot.send_animation.assert_awaited_once()
+        adapter._bot.send_photo.assert_not_awaited()
+        sent = adapter._bot.send_animation.call_args.kwargs
+        assert sent["chat_id"] == 12345
+        assert sent["caption"] == "Radar loop"
+        assert sent["reply_to_message_id"] == 42
+        assert sent["message_thread_id"] == 17
+        assert sent["animation"].closed
+
+    def test_uppercase_gif_extension_also_animates(self, adapter, tmp_path):
+        """Extension matching must be case-insensitive."""
+        gif = tmp_path / "LOOP.GIF"
+        gif.write_bytes(b"GIF89a" + b"\x00" * 100)
+
+        mock_msg = MagicMock()
+        mock_msg.message_id = 44
+        adapter._bot.send_animation = AsyncMock(return_value=mock_msg)
+        adapter._bot.send_photo = AsyncMock()
+
+        result = _run(
+            adapter.send_image_file(chat_id="12345", image_path=str(gif))
+        )
+
+        assert result.success
+        adapter._bot.send_animation.assert_awaited_once()
+        adapter._bot.send_photo.assert_not_awaited()
+
+    def test_missing_gif_reports_missing_path_not_animation(self, adapter, tmp_path):
+        """A nonexistent .gif still fails on the path check, not in sendAnimation."""
+        adapter._bot.send_animation = AsyncMock()
+
+        result = _run(
+            adapter.send_image_file(
+                chat_id="12345", image_path=str(tmp_path / "absent.gif")
+            )
+        )
+
+        assert not result.success
+        assert result.error == f"Image file not found: {tmp_path / 'absent.gif'}"
+        adapter._bot.send_animation.assert_not_awaited()
+
+    @pytest.mark.parametrize("extension", ["png", "gif", "GIF"])
+    def test_returns_error_when_not_connected(self, adapter, extension):
         """send_image_file should return error when bot is None."""
         adapter._bot = None
         result = _run(
-            adapter.send_image_file(chat_id="12345", image_path="/tmp/img.png")
+            adapter.send_image_file(chat_id="12345", image_path=f"/tmp/img.{extension}")
         )
         assert not result.success
         assert "Not connected" in result.error

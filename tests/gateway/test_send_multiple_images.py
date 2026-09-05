@@ -100,6 +100,49 @@ class TestTelegramMultiImage:
         a._bot.send_media_group = AsyncMock(return_value=[MagicMock(message_id=1)])
         return a
 
+    @pytest.mark.parametrize("extension", ["gif", "GIF"])
+    @pytest.mark.parametrize("photo_count", [0, 2])
+    def test_local_gif_avoids_album(self, adapter, tmp_path, monkeypatch, extension, photo_count):
+        import telegram
+
+        gif = tmp_path / f"radar loop.{extension}"
+        gif.write_bytes(b"GIF89a")
+        photos = [tmp_path / f"photo{i}.png" for i in range(photo_count)]
+        for photo in photos:
+            photo.write_bytes(b"\x89PNG")
+        album_paths = []
+
+        def album_photo(media, caption=None):
+            album_paths.append(media.name)
+            return {"media": media, "caption": caption}
+
+        monkeypatch.setattr(telegram, "InputMediaPhoto", album_photo)
+        adapter._bot.send_animation = AsyncMock(return_value=MagicMock(message_id=43))
+        adapter._bot.send_photo = AsyncMock()
+        images = [(gif.as_uri(), "Radar loop")] + [(photo.as_uri(), "Still") for photo in photos]
+
+        result = _run(adapter.send_multiple_images(
+            "12345", images,
+            metadata={
+                "thread_id": "17", "telegram_reply_to_message_id": "42",
+                "telegram_dm_topic_reply_fallback": True,
+            },
+        ))
+
+        assert result.success
+        adapter._bot.send_animation.assert_awaited_once()
+        adapter._bot.send_photo.assert_not_awaited()
+        sent = adapter._bot.send_animation.call_args.kwargs
+        assert sent["animation"].name == str(gif)
+        assert sent["caption"] == "Radar loop"
+        assert sent["reply_to_message_id"] == 42
+        assert sent["message_thread_id"] == 17
+        assert album_paths == [str(photo) for photo in photos]
+        if photos:
+            adapter._bot.send_media_group.assert_awaited_once()
+        else:
+            adapter._bot.send_media_group.assert_not_awaited()
+
     def test_single_batch_under_10_calls_send_media_group_once(self, adapter):
         """3 photos → one send_media_group call with 3 items."""
         import telegram
