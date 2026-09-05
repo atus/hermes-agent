@@ -74,6 +74,60 @@ class TestTelegramSendImageFile:
         assert call_kwargs.kwargs["chat_id"] == 12345
 
 
+    def test_sends_local_gif_as_animation(self, adapter, tmp_path):
+        """A local .gif must go through sendAnimation, not sendPhoto.
+
+        sendPhoto rasterizes an animated GIF to a single still frame, so
+        routing it as a photo silently kills the animation.
+        """
+        gif = tmp_path / "radar.gif"
+        gif.write_bytes(b"GIF89a" + b"\x00" * 100)
+
+        mock_msg = MagicMock()
+        mock_msg.message_id = 43
+        adapter._bot.send_animation = AsyncMock(return_value=mock_msg)
+        adapter._bot.send_photo = AsyncMock()
+
+        result = _run(
+            adapter.send_image_file(chat_id="12345", image_path=str(gif))
+        )
+
+        assert result.success
+        assert result.message_id == "43"
+        adapter._bot.send_animation.assert_awaited_once()
+        adapter._bot.send_photo.assert_not_awaited()
+
+    def test_uppercase_gif_extension_also_animates(self, adapter, tmp_path):
+        """Extension matching must be case-insensitive."""
+        gif = tmp_path / "LOOP.GIF"
+        gif.write_bytes(b"GIF89a" + b"\x00" * 100)
+
+        mock_msg = MagicMock()
+        mock_msg.message_id = 44
+        adapter._bot.send_animation = AsyncMock(return_value=mock_msg)
+        adapter._bot.send_photo = AsyncMock()
+
+        result = _run(
+            adapter.send_image_file(chat_id="12345", image_path=str(gif))
+        )
+
+        assert result.success
+        adapter._bot.send_animation.assert_awaited_once()
+        adapter._bot.send_photo.assert_not_awaited()
+
+    def test_missing_gif_reports_missing_path_not_animation(self, adapter, tmp_path):
+        """A nonexistent .gif still fails on the path check, not in sendAnimation."""
+        adapter._bot.send_animation = AsyncMock()
+
+        result = _run(
+            adapter.send_image_file(
+                chat_id="12345", image_path=str(tmp_path / "absent.gif")
+            )
+        )
+
+        assert not result.success
+        adapter._bot.send_animation.assert_not_awaited()
+
     def test_returns_error_when_not_connected(self, adapter):
         """send_image_file should return error when bot is None."""
         adapter._bot = None

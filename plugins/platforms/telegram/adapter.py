@@ -326,6 +326,10 @@ _TELEGRAM_IMAGE_EXT_TO_MIME = {
     ".gif": "image/gif",
 }
 
+# Telegram renders GIFs only via sendAnimation; sendPhoto flattens them
+# to a single still frame.
+_TELEGRAM_ANIMATION_EXTENSION = ".gif"
+
 def _coerce_duration_seconds(value: Any) -> Optional[int]:
     """Round a raw length to whole positive seconds, or None if unusable."""
     try:
@@ -7859,13 +7863,27 @@ class TelegramAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
-        """Send a local image file natively as a Telegram photo."""
+        """Send a local image file natively as a Telegram photo.
+
+        GIFs are routed to ``send_animation`` instead: Bot API ``sendPhoto``
+        rasterizes an animated GIF down to a single still frame, so a local
+        radar loop or screen capture would arrive as a dead image.
+        """
         if not self._bot:
             return SendResult(success=False, error="Not connected")
 
         try:
             if not os.path.exists(image_path):
                 return SendResult(success=False, error=self._missing_media_path_error("Image", image_path))
+
+            if os.path.splitext(image_path)[1].lower() == _TELEGRAM_ANIMATION_EXTENSION:
+                return await self.send_animation(
+                    chat_id=chat_id,
+                    animation_url=image_path,
+                    caption=caption,
+                    reply_to=reply_to,
+                    metadata=metadata,
+                )
 
             _thread = self._metadata_thread_id(metadata)
             reply_to_id = self._reply_to_message_id_for_send(reply_to, metadata, reply_to_mode=self._reply_to_mode)
