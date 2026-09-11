@@ -3221,6 +3221,11 @@ def cleanup_task_resources(agent, task_id: str) -> None:
         if agent.verbose_logging:
             logger.warning("Failed to cleanup VM for task %s: %s", task_id, e)
     try:
+        from tools.browser_use_cli import is_browser_use_cli_mode
+
+        # Browser Use lanes belong to the conversation, not a headless turn.
+        if is_browser_use_cli_mode():
+            return
         headed = False
         try:
             from tools.browser_tool import _is_headed_mode

@@ -1729,6 +1729,10 @@ def _emergency_cleanup_all_sessions():
         return
     _cleanup_done = True
 
+    from tools.browser_use_sessions import cleanup_all_owners
+
+    cleanup_all_owners()
+
     # Clean up this process's own sessions first, so their owner_pid files
     # are removed before the reaper scans.
     if _active_sessions:
@@ -4908,6 +4912,10 @@ def cleanup_browser(task_id: Optional[str] = None) -> None:
     if task_id is None:
         task_id = "default"
 
+    from tools.browser_use_sessions import cleanup_owner
+
+    cleanup_owner(task_id)
+
     # Expand to the full set of session keys to reap. For a bare task_id
     # that includes the cloud/primary key + the local sidecar if one exists.
     if _is_local_sidecar_key(task_id):
@@ -5029,6 +5037,9 @@ def cleanup_all_browsers() -> None:
 
     Useful for cleanup on shutdown.
     """
+    from tools.browser_use_sessions import cleanup_all_owners
+
+    cleanup_all_owners()
     with _cleanup_lock:
         task_ids = list(_active_sessions.keys())
     for task_id in task_ids:

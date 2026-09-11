@@ -1269,6 +1269,7 @@ def _run_review_in_thread(
             # conversation (the review fires every ~10 turns). Leave session
             # finalization to the real owner (CLI close / gateway reset / cron).
             review_agent._end_session_on_close = False
+            review_agent._owns_browser_session = False
             # Never let the review fork compress. It shares the parent's
             # session_id, so if it won a compression race it would rotate the
             # parent into a NEW child that the gateway never adopts (the fork

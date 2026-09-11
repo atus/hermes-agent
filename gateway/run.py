@@ -18938,6 +18938,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # wiping model/reasoning overrides set between turns (Closes #48031).
         _was_auto_reset = getattr(session_entry, "was_auto_reset", False)
         if _was_auto_reset:
+            # The expiry watcher may already have notified plugins, but cache
+            # eviction must not strand browser resources if it never ran.
+            previous_session_id = getattr(session_entry, "prev_session_id", None)
+            if previous_session_id:
+                try:
+                    from tools.browser_tool import cleanup_browser
+
+                    await asyncio.to_thread(cleanup_browser, previous_session_id)
+                except Exception:
+                    logger.warning("Auto-reset browser cleanup failed", exc_info=True)
+
             # Treat auto-reset as a full conversation boundary — clear every
             # conversation-scoped per-session dict in one funnel call so the
             # fresh session does not inherit the previous conversation's
@@ -19489,6 +19500,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                     session_id=session_entry.session_id,
                                     session_db=_hyg_session_db,
                                 )
+                                _hyg_agent._owns_browser_session = False
                                 _seed_hygiene_system_prompt(
                                     _hyg_agent,
                                     _hyg_session_row,

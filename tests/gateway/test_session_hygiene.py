@@ -215,7 +215,10 @@ class TestTokenEstimation:
 
 
 @pytest.mark.asyncio
-async def test_session_hygiene_preserves_transcript_when_no_rotation(monkeypatch, tmp_path):
+@pytest.mark.parametrize("bind_fails", [False, True])
+async def test_session_hygiene_preserves_transcript_when_no_rotation(
+    monkeypatch, tmp_path, bind_fails
+):
     """Regression for #21301: the hygiene agent is built without a session_db,
     so _compress_context cannot rotate. When it neither rotates NOR compacts
     in place, the transcript MUST be preserved — an unconditional
@@ -232,6 +235,10 @@ async def test_session_hygiene_preserves_transcript_when_no_rotation(monkeypatch
             self.model = kwargs.get("model")
             self.session_id = kwargs.get("session_id", "fake-session")
             self.compression_in_place = False  # not in-place either
+            if bind_fails:
+                self.context_compressor = SimpleNamespace(
+                    bind_session_state=MagicMock(side_effect=RuntimeError("bind failed"))
+                )
             self._print_fn = None
             self.shutdown_memory_provider = MagicMock()
             self.close = MagicMock()
@@ -323,6 +330,7 @@ async def test_session_hygiene_preserves_transcript_when_no_rotation(monkeypatch
     result = await runner._handle_message(event)
 
     assert result == "ok"
+    assert NonRotatingCompressAgent.last_instance._owns_browser_session is False
     # The transcript must NOT be rewritten — the original is preserved.
     runner.session_store.rewrite_transcript.assert_not_called()
 

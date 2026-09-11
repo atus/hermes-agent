@@ -101,6 +101,7 @@ async def test_compress_command_works_when_auto_compaction_disabled():
     assert "disabled" not in result.lower()
     assert "Compressed:" in result
     agent_instance._compress_context.assert_called_once()
+    assert agent_instance._owns_browser_session is False
     assert agent_instance._compress_context.call_args.kwargs.get("force") is True
 
 

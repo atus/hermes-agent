@@ -4572,9 +4572,11 @@ class AIAgent:
         except Exception:
             pass
 
-        # 3. Clean browser daemon sessions
+        # 3. Helpers borrow a live session ID but do not own its browser.
+        # DB-row ownership is separate: gateway shutdown still reaps tabs.
         try:
-            cleanup_browser(task_id)
+            if getattr(self, "_owns_browser_session", True):
+                cleanup_browser(task_id)
         except Exception:
             pass
 

@@ -38,7 +38,7 @@ def has_hook(hook_name: str) -> bool:
 
 
 def finalize_session(**kwargs: Any) -> List[Any]:
-    """Notify observers and hard-close one core-owned Relay conversation."""
+    """Notify observers and hard-close session-owned browser and Relay state."""
     try:
         from hermes_cli.observability import observe_lifecycle
 
@@ -48,6 +48,14 @@ def finalize_session(**kwargs: Any) -> List[Any]:
 
     session_id = str(kwargs.get("session_id") or "")
     if session_id:
+        # Finalization also runs after cache eviction or CLI agent reuse.
+        try:
+            from tools.browser_tool import cleanup_browser
+
+            cleanup_browser(session_id)
+        except Exception:
+            logger.warning("Session browser cleanup failed", exc_info=True)
+
         try:
             from agent import relay_runtime
 

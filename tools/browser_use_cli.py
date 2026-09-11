@@ -16,6 +16,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from utils import is_truthy_value
 
+from tools.browser_use_sessions import run_cli as _run_cli
+
 logger = logging.getLogger(__name__)
 
 _BACKEND_KEY = "browser-use"
@@ -30,46 +32,14 @@ _SESSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 # subprocess launches — never exported to the CLI.
 _PRIVATE_BROWSER_SENTINEL = "_HERMES_BU_PRIVATE_BROWSER"
 
-# Preamble prepended to the model's code for named sessions on SHARED
-# browsers (local Chrome / CDP override). The harness daemon attaches to the
-# first existing page at startup, so two fresh named daemons can land on the
-# SAME tab; steering this daemon onto a tab it created keeps concurrent named
-# sessions from clobbering each other before their first new_tab(). Runs
-# once per daemon (marker file keyed by BU_NAME under the harness runtime
-# state), costs one IPC round-trip on later calls.
+# Load the repository-owned adapter in the CLI's interpreter, not site-packages.
 _OWN_TAB_PREAMBLE = """\
-# hermes: pin this named session to its own tab (once per daemon process)
-def _hermes_ensure_own_tab():
-    import os as _os, tempfile as _tf
-    _name = _os.environ.get("BU_NAME", "default")
-    try:
-        # Key the marker by the daemon's pid so a daemon restart (which
-        # re-attaches to the first shared page) re-pins automatically,
-        # while agent-driven tab switches mid-session are left alone.
-        from browser_harness import _ipc as _bipc
-        _dpid = _bipc.pid_path(_name).read_text().strip() or "0"
-    except Exception:
-        _dpid = "0"
-    _uid = _os.getuid() if hasattr(_os, "getuid") else 0
-    _marker = _os.path.join(
-        _tf.gettempdir(), "hermes-bu-owntab-%s-%s-%s" % (_uid, _name, _dpid)
-    )
-    if _os.path.exists(_marker):
-        return
-    try:
-        # Force a fresh target: new_tab() would REUSE a blank current tab,
-        # which is exactly the tab a sibling daemon may also hold.
-        _tid = cdp("Target.createTarget", url="about:blank").get("targetId")
-        if _tid:
-            switch_tab(_tid)
-    except Exception:
-        pass  # best-effort: worst case is pre-fix behavior
-    try:
-        open(_marker, "w").close()
-    except OSError:
-        pass
-_hermes_ensure_own_tab()
-del _hermes_ensure_own_tab
+import os as _hermes_os, runpy as _hermes_runpy
+from browser_harness import helpers as _hermes_helpers
+_hermes_scope = _hermes_runpy.run_path(_hermes_os.environ['_HERMES_BU_ADAPTER'])['install_scope'](
+    _hermes_helpers, _hermes_os.environ['_HERMES_BU_TABS'])
+for _hermes_name in ('cdp', 'current_tab', 'new_tab', 'list_tabs', 'switch_tab', 'close_tab', 'ensure_real_tab'):
+    globals()[_hermes_name] = getattr(_hermes_helpers, _hermes_name)
 """
 
 _DEFAULT_TIMEOUT_S = 300
@@ -519,10 +489,9 @@ def _resolve_backend_cdp(
         return None
 
     try:
-        # Named sessions get their OWN provider browser, keyed by name so the
-        # same name reuses one browser across calls and tasks, and different
-        # names never collide. Unnamed calls keep the per-task key.
-        cache_key = f"bu-named-{session_name}" if session_name else (task_id or "browser-exec-default")
+        from tools.browser_use_sessions import lane_name
+
+        cache_key = lane_name(task_id, session_name)
         session_info = _get_session_info(cache_key)
     except Exception as e:
         return (
@@ -551,12 +520,37 @@ def browser_exec(
     session: str = "",
     timeout_s: int = _DEFAULT_TIMEOUT_S,
     task_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+):
+    """Run one call at a time in a conversation-owned browser lane."""
+    from tools.browser_use_sessions import lane_call
+    from tools.registry import tool_error
+
+    try:
+        with lane_call(session_id or task_id or "default", session):
+            return _browser_exec(code, session, timeout_s, task_id, session_id)
+    except (TimeoutError, RuntimeError) as error:
+        return tool_error(str(error))
+
+
+def _browser_exec(
+    code: str,
+    session: str = "",
+    timeout_s: int = _DEFAULT_TIMEOUT_S,
+    task_id: Optional[str] = None,
+    session_id: Optional[str] = None,
 ):
     """Run Python code through the browser-use CLI, and return its output"""
     from tools.registry import tool_error, tool_result
 
     if not code or not code.strip():
-        return tool_error("No code provided. Pass Python that uses the pre-imported helpers, e.g. new_tab(\"https://example.com\") then print(page_info()).")
+        return tool_error("No code provided. Pass Python that uses the pre-imported helpers, e.g. goto_url(\"https://example.com\") then print(page_info()).")
+
+    if not isinstance(session, str) or (session and not _SESSION_RE.fullmatch(session)):
+        return tool_error(
+            f"Invalid session name {session!r}: use 1-64 letters, digits, "
+            "dashes, or underscores (e.g. 'research')."
+        )
 
     blocked = _blocked_url_in_code(code)
     if blocked:
@@ -572,13 +566,13 @@ def browser_exec(
         )
 
     env = _base_subprocess_env()
-    if session:
-        if not _SESSION_RE.match(session):
-            return tool_error(
-                f"Invalid session name {session!r}: use 1-64 letters, digits, "
-                "dashes, or underscores (e.g. 'r7k2')."
-            )
-        env["BU_NAME"] = session
+    from tools.browser_use_sessions import register_lane, resolve_owner
+
+    owner = resolve_owner(session_id or task_id or "default")
+    record = register_lane(owner, session, env)
+    env['_HERMES_BU_ADAPTER'] = str(Path(__file__).with_name('browser_use_runtime.py'))
+    env['_HERMES_BU_TABS'] = str(record.with_suffix('.tabs.json'))
+    env['BH_TAB_MARKER'] = '0'
     # Route through the configured browser backend (Browserbase, Firecrawl,
     # Nous gateway, CDP override, local Chrome, …). Named sessions compose
     # with the backend: BU_NAME namespaces the harness daemon (its IPC
@@ -587,20 +581,14 @@ def browser_exec(
     # each other's daemon (#86894). Browser Use direct-API cloud configs
     # are the one exception: the CLI manages named cloud browsers natively,
     # and _resolve_backend_cdp skips provider resolution for them.
-    backend_err = _resolve_backend_cdp(env, task_id, session_name=session)
+    backend_err = _resolve_backend_cdp(env, owner, session_name=session)
     if backend_err:
         return tool_error(backend_err)
 
-    # On a SHARED browser (local Chrome / CDP override) a fresh named daemon
-    # attaches to the first existing page — the same page a sibling daemon
-    # may hold. Pin each named session to a tab it created before running
-    # the model's code. Private per-name browsers (provider-keyed or BU
-    # cloud) skip this: no one to collide with, and the extra tab would leak.
-    private_browser = env.pop(_PRIVATE_BROWSER_SENTINEL, None)
-    if session and not private_browser:
-        code = _OWN_TAB_PREAMBLE + code
+    env.pop(_PRIVATE_BROWSER_SENTINEL, None)
+    code = _OWN_TAB_PREAMBLE + code
 
-    workspace = _workspace_dir(task_id)
+    workspace = _workspace_dir(owner)
     if workspace:
         env["BH_AGENT_WORKSPACE"] = workspace
 
@@ -629,7 +617,7 @@ def browser_exec(
 
     started = time.time()
     try:
-        proc = subprocess.run(
+        proc = _run_cli(
             cmd,
             input=code,
             capture_output=True,
@@ -682,7 +670,9 @@ _HEADER_BASE = (
     "one-line comment describing the step for the user in plain, "
     "non-technical language, max 60 chars (e.g. `# Searching Amazon for "
     "paper towels`) — the UI displays it as the step label.\n\n"
-    "STATE: the browser session and the workspace persist across calls; "
+    "STATE: tabs belong to this Hermes session and persist across ordinary "
+    "turns and stops; owner-end cleanup closes its lanes, not other sessions. "
+    "The browser session and the workspace persist across calls; "
     "Python variables do NOT (each call is a fresh interpreter). The "
     "workspace is a stable directory — path in $BH_AGENT_WORKSPACE and "
     "returned as `workspace` in every result. For multi-item tasks "
@@ -700,7 +690,9 @@ _HEADER_BASE = (
     "call, so progress survives timeouts. For an isolated concurrent "
     "browser session (parallel tasks that must not share tabs), pass "
     "session=<name> (never BU_NAME env syntax) and reuse the same name on "
-    "every related call."
+    "every related call. Keep aliases stable per worker, not per URL. "
+    "Use goto_url for normal navigation; new_tab only when retaining a "
+    "separate page for comparison. Failed cleanup is retained for retry."
 )
 
 _HEADER_VISION = (
@@ -750,8 +742,12 @@ _skill_text_fetched = False
 # legacy browser_* toolset either way). The pinned digest below keeps the
 # first-call reliability of the helper names without the 7.7KB dump.
 _HELPERS_DIGEST = (
-    "\n\nHELPERS (pre-imported): new_tab(url) opens/navigates (use for the "
-    "FIRST navigation), goto_url(url) navigates the current tab, "
+    "\n\nHELPERS (pre-imported): goto_url(url) navigates the owned current "
+    "tab, including the first call (an owned tab is created automatically). "
+    "new_tab(url) creates and selects an additional retained tab. "
+    "list_tabs() lists this lane's tabs; current_tab() returns the selected "
+    "tab; switch_tab(target_id) selects an owned tab; close_tab(target_id) "
+    "closes it (omit the argument for current). "
     "wait_for_load() after navigation, page_info() summarizes the current "
     "page state, js(expr) evaluates a JS expression and returns its value "
     "(js('document.title'); wrap function bodies as js('(() => {...})()') — "
@@ -799,7 +795,7 @@ BROWSER_EXEC_SCHEMA = {
             },
             "session": {
                 "type": "string",
-                "description": "Named isolated browser session (sets BU_NAME): each name gets its own harness daemon — and on cloud backends its own browser — so concurrent tasks don't clobber each other. Omit for the shared default session. Reuse the same name across calls to keep working in that session (and the name passed to start_remote_daemon(), if used).",
+                "description": "Named lane within this Hermes session: each lane gets its own harness daemon and, on cloud backends, its own browser. Omit for this owner's default lane. Reuse one stable alias per worker, not a new alias per URL. Hermes derives BU_NAME internally; do not set it or start another daemon manually.",
             },
             "timeout_s": {
                 "type": "integer",
@@ -826,6 +822,7 @@ registry.register(
         session=args.get("session", "") or "",
         timeout_s=args.get("timeout_s", _DEFAULT_TIMEOUT_S),
         task_id=kw.get("task_id"),
+        session_id=kw.get("session_id"),
     ),
     check_fn=is_browser_use_cli_mode,
     dynamic_schema_overrides=_dynamic_schema_overrides,

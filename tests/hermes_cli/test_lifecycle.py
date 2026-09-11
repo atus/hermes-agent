@@ -48,6 +48,58 @@ def test_finalize_session_closes_core_before_plugin_export(monkeypatch):
     }
 
 
+def test_finalize_cleans_browser_without_agent(monkeypatch):
+    from tools import browser_tool
+
+    cleaned = []
+    monkeypatch.setattr(browser_tool, "cleanup_browser", cleaned.append)
+    monkeypatch.setattr(observability, "observe_lifecycle", lambda *a, **kw: None)
+    monkeypatch.setattr(plugins, "invoke_hook", lambda *a, **kw: [])
+    monkeypatch.setattr(
+        relay_runtime.SESSION_COORDINATOR, "finalize_conversation", lambda **kw: None
+    )
+
+    lifecycle.finalize_session(session_id="evicted-owner", reason="reset")
+
+    assert cleaned == ["evicted-owner"]
+
+
+def test_browser_failure_keeps_finalizing(monkeypatch):
+    from tools import browser_tool
+
+    calls = []
+
+    def fail_cleanup(session_id):
+        raise RuntimeError("browser unavailable")
+
+    monkeypatch.setattr(browser_tool, "cleanup_browser", fail_cleanup)
+    monkeypatch.setattr(observability, "observe_lifecycle", lambda *a, **kw: None)
+    monkeypatch.setattr(
+        relay_runtime.SESSION_COORDINATOR, "finalize_conversation",
+        lambda **kw: calls.append("relay"),
+    )
+    monkeypatch.setattr(
+        plugins, "invoke_hook", lambda *a, **kw: calls.append("plugin") or ["ok"]
+    )
+
+    assert lifecycle.finalize_session(session_id="owner") == ["ok"]
+    assert calls == ["relay", "plugin"]
+
+
+def test_missing_id_skips_browser_cleanup(monkeypatch):
+    from unittest.mock import Mock
+    from tools import browser_tool
+
+    cleanup = Mock()
+    monkeypatch.setattr(browser_tool, "cleanup_browser", cleanup)
+    monkeypatch.setattr(observability, "observe_lifecycle", lambda *a, **kw: None)
+    monkeypatch.setattr(plugins, "invoke_hook", lambda *a, **kw: [])
+
+    lifecycle.finalize_session()
+
+    cleanup.assert_not_called()
+
+
 def test_plugin_only_dispatch_does_not_reenter_builtin_observers(monkeypatch):
     manager = SimpleNamespace(invoke_hook=lambda name, **kwargs: [name, kwargs])
     monkeypatch.setattr(plugins, "get_plugin_manager", lambda: manager)

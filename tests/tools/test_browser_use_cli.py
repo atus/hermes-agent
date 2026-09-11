@@ -19,6 +19,7 @@ import time
 import pytest
 
 import tools.browser_use_cli as bu_cli
+from tools.browser_use_sessions import lane_name
 
 
 @pytest.fixture(autouse=True)
@@ -414,14 +415,12 @@ class TestBackendCdpResolution:
         monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
         result = json.loads(bu_cli.browser_exec("print(1)", session="r7k2"))
         assert result["success"] is True
-        assert seen == ["bu-named-r7k2"]
-        assert "bu:r7k2" in result["output"]
-        assert "ws:wss://browser.example/cdp/bu-named-r7k2" in result["output"]
+        assert seen == [lane_name(None, "r7k2")]
+        assert f"bu:{lane_name(None, 'r7k2')}" in result["output"]
+        assert f"ws:wss://browser.example/cdp/{seen[0]}" in result["output"]
 
-    def test_named_session_key_stable_across_tasks(self, monkeypatch):
-        """The same session name maps to the same provider cache key no
-        matter which task calls it — that is what lets a follow-up call
-        reattach to the same cloud browser."""
+    def test_named_session_key_isolates_tasks(self, monkeypatch):
+        """Aliases identify a lane within an owner, not a global browser."""
         import tools.browser_tool as bt
 
         seen = []
@@ -434,7 +433,8 @@ class TestBackendCdpResolution:
         env1, env2 = {}, {}
         assert bu_cli._resolve_backend_cdp(env1, "task-A", session_name="research") is None
         assert bu_cli._resolve_backend_cdp(env2, "task-B", session_name="research") is None
-        assert seen == ["bu-named-research", "bu-named-research"]
+        assert seen == [lane_name("task-A", "research"), lane_name("task-B", "research")]
+        assert seen[0] != seen[1]
 
     def test_named_session_direct_api_bu_cloud_still_skips_provider(
         self, tmp_path, monkeypatch
@@ -460,8 +460,7 @@ class TestBackendCdpResolution:
 
 
 class TestOwnTabPreamble:
-    """Named sessions on SHARED browsers get the own-tab preamble prepended;
-    private per-name browsers and unnamed sessions do not."""
+    """Every lane installs the repository-owned tab adapter."""
 
     def _run(self, tmp_path, monkeypatch, *, session="", private=False, provider=False):
         import tools.browser_tool as bt
@@ -483,20 +482,20 @@ class TestOwnTabPreamble:
     def test_named_shared_browser_gets_preamble(self, tmp_path, monkeypatch):
         result = self._run(tmp_path, monkeypatch, session="r7k2")
         assert result["success"] is True
-        assert "_hermes_ensure_own_tab" in result["output"]
+        assert "_hermes_scope" in result["output"]
         # model code still present, after the preamble
-        assert result["output"].index("_hermes_ensure_own_tab") < result["output"].index("print('payload')")
+        assert result["output"].index("_hermes_scope") < result["output"].index("print('payload')")
 
-    def test_unnamed_session_gets_no_preamble(self, tmp_path, monkeypatch):
+    def test_default_lane_gets_preamble(self, tmp_path, monkeypatch):
         result = self._run(tmp_path, monkeypatch, session="")
         assert result["success"] is True
-        assert "_hermes_ensure_own_tab" not in result["output"]
+        assert "_hermes_scope" in result["output"]
 
-    def test_named_provider_browser_skips_preamble(self, tmp_path, monkeypatch):
-        """Per-name provider browsers are private — preamble would leak a tab."""
+    def test_provider_lane_gets_preamble(self, tmp_path, monkeypatch):
+        """Private browsers also track explicit tab ownership."""
         result = self._run(tmp_path, monkeypatch, session="r7k2", provider=True)
         assert result["success"] is True
-        assert "_hermes_ensure_own_tab" not in result["output"]
+        assert "_hermes_scope" in result["output"]
 
     def test_sentinel_never_reaches_subprocess_env(self, tmp_path, monkeypatch):
         import tools.browser_tool as bt
@@ -776,6 +775,15 @@ class TestSkillTextDescription:
         assert overrides["description"].startswith(bu_cli._HEADER_BASE)
         assert overrides["description"].endswith(bu_cli._HELPERS_DIGEST)
 
+    def test_owned_tab_guidance(self):
+        digest = bu_cli._HELPERS_DIGEST
+        for helper in ('goto_url(', 'new_tab(', 'list_tabs(', 'current_tab(', 'switch_tab(', 'close_tab('):
+            assert helper in digest
+        assert 'including the first' in digest
+        assert 'FIRST navigation' not in digest
+        assert 'per URL' in bu_cli._HEADER_BASE
+        assert 'shared default' not in bu_cli.BROWSER_EXEC_SCHEMA['parameters']['properties']['session']['description']
+
     def test_digest_names_core_helpers(self):
         for helper in ("new_tab(", "page_info()", "js(", "fill_input(",
                        "click_at_xy(", "capture_screenshot()", "cdp("):
@@ -803,14 +811,15 @@ class TestBrowserExec:
         result = json.loads(bu_cli.browser_exec('print("hi")'))
         assert result["success"] is True
         assert result["exit_code"] == 0
-        assert 'got:print("hi")' in result["output"]
+        assert result["output"].startswith("got:" + bu_cli._OWN_TAB_PREAMBLE)
+        assert result["output"].rstrip().endswith('print("hi")')
         assert "session" not in result
 
     def test_session_sets_bu_name(self, tmp_path, monkeypatch):
         cli = _fake_cli(tmp_path, 'cat > /dev/null\necho "bu:$BU_NAME"\n')
         monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
         result = json.loads(bu_cli.browser_exec("print(1)", session="r7k2"))
-        assert "bu:r7k2" in result["output"]
+        assert f"bu:{lane_name(None, 'r7k2')}" in result["output"]
         assert result["session"] == "r7k2"
 
     def test_invalid_session_name_rejected(self, monkeypatch, tmp_path):

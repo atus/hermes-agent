@@ -265,6 +265,34 @@ def test_background_review_fork_opts_out_of_session_finalization(monkeypatch):
     assert seen.get("at_run_time") is False
 
 
+def test_review_close_preserves_parent_browser(monkeypatch):
+    from unittest.mock import Mock
+
+    cleaned = Mock()
+    closed = []
+
+    class ReviewWithRealClose(FakeReviewAgent):
+        def close(self):
+            closed.append(self.session_id)
+            AIAgent.close(self)
+
+    monkeypatch.setattr(run_agent_module, "cleanup_browser", cleaned)
+    monkeypatch.setattr(run_agent_module, "cleanup_vm", lambda *a: None)
+    monkeypatch.setattr("tools.process_registry.process_registry.kill_all", lambda **kw: None)
+    monkeypatch.setattr("tools.computer_use.release_computer_use_session", lambda *a: None)
+    monkeypatch.setattr(run_agent_module, "AIAgent", ReviewWithRealClose)
+    monkeypatch.setattr(run_agent_module.threading, "Thread", ImmediateThread)
+
+    AIAgent._spawn_background_review(
+        _bare_agent(),
+        messages_snapshot=[{"role": "user", "content": "hello"}],
+        review_memory=True,
+    )
+
+    assert closed == ["test-session"]
+    cleaned.assert_not_called()
+
+
 def test_background_review_skipped_in_delegation_subagent(monkeypatch):
     """The automatic post-turn review must NOT fire inside a delegation
     subagent (``_delegate_depth > 0``).
