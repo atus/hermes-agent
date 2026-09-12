@@ -18,6 +18,15 @@ export function normalizeWhatsAppId(value) {
   return String(value).replace(':', '@');
 }
 
+function whatsappAccountId(value) {
+  const raw = String(value || '');
+  const separator = raw.lastIndexOf('@');
+  if (separator < 0) return raw.split(':', 1)[0];
+
+  const user = raw.slice(0, separator).split(':', 1)[0];
+  return `${user}${raw.slice(separator)}`;
+}
+
 export function getMessageContent(msg) {
   const content = msg?.message || {};
   if (content.ephemeralMessage?.message) return content.ephemeralMessage.message;
@@ -327,14 +336,15 @@ export async function extractBridgeEvent({
 
   const mediaFailures = [];
 
-  const saveMedia = async ({ mediaMessage, dir, prefix, fallbackExt, fileName: name, type }) => {
-    if (!downloadMedia) return;
+  const saveMedia = async ({ sourceMessage = msg, mediaMessage, dir, prefix, fallbackExt, fileName: name, type }) => {
+    if (!downloadMedia) return false;
     try {
-      const buf = await downloadMedia(msg);
+      const buf = await downloadMedia(sourceMessage);
       const ext = mediaExtForMime(mediaMessage?.mimetype, fallbackExt);
       const writer = writeMediaFile || defaultWriteMediaFile;
       const saved = await writer({ buffer: buf, dir, prefix, ext, fileName: name });
       if (saved) mediaUrls.push(saved);
+      return Boolean(saved);
     } catch (err) {
       // A failed CDN fetch (expired media URL, transient network error) must
       // never reject out of extractBridgeEvent — that would drop this message
@@ -346,6 +356,7 @@ export async function extractBridgeEvent({
       try {
         console.warn(`[bridge] failed to download inbound ${type || 'media'}:`, err?.message || err);
       } catch {}
+      return false;
     }
   };
 
@@ -449,6 +460,40 @@ export async function extractBridgeEvent({
     nativeType = 'pollUpdateMessage';
     body = formatPollUpdateText(messageContent.pollUpdateMessage);
     nativeMetadata.pollUpdate = messageContent.pollUpdateMessage;
+  }
+
+  // A reply can be the only surviving handle to a document sent from another
+  // linked device. Carry that quoted document into the inbound event instead
+  // of exposing only its caption and forcing the user to upload it again.
+  const quotedDocument = contextInfo?.quotedMessage?.documentMessage;
+  if (!hasMedia && quotedDocument) {
+    const participant = whatsappAccountId(contextInfo.participant);
+    const fromMe = botIds.some(id => whatsappAccountId(id) === participant);
+    const quotedEnvelope = {
+      key: {
+        id: quotedMessageId,
+        remoteJid: contextInfo.remoteJid || chatId,
+        participant: contextInfo.participant,
+        fromMe,
+      },
+      message: contextInfo.quotedMessage,
+    };
+    const saved = await saveMedia({
+      sourceMessage: quotedEnvelope,
+      mediaMessage: quotedDocument,
+      dir: cacheDirs.document,
+      prefix: 'doc',
+      fallbackExt: '.bin',
+      fileName: quotedDocument.fileName || 'document',
+      type: 'quoted document',
+    });
+    if (saved) {
+      hasMedia = true;
+      mediaType = 'document';
+      mime = quotedDocument.mimetype || 'application/octet-stream';
+      fileName = quotedDocument.fileName || 'document';
+      nativeMetadata.quotedDocument = true;
+    }
   }
 
   // Surface failed downloads to the agent instead of silently losing the

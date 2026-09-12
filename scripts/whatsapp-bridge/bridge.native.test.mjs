@@ -131,6 +131,60 @@ import {
 }
 
 {
+  let downloaded = null;
+  const event = await extractBridgeEvent({
+    msg: {
+      key: {
+        id: 'reply-to-document',
+        remoteJid: '120363001234567890@g.us',
+        participant: '15550001111@s.whatsapp.net',
+        fromMe: false,
+      },
+      pushName: 'Tester',
+      messageTimestamp: 123,
+      message: {
+        extendedTextMessage: {
+          text: 'parse the first two pages',
+          contextInfo: {
+            stanzaId: 'quoted-document',
+            participant: '15559998888@s.whatsapp.net',
+            remoteJid: '120363001234567890@g.us',
+            quotedMessage: {
+              documentMessage: {
+                caption: 'Liam weekly plan',
+                fileName: 'Ukeplan_uke_37.pdf',
+                mimetype: 'application/pdf',
+              },
+            },
+          },
+        },
+      },
+    },
+    chatId: '120363001234567890@g.us',
+    senderId: '15550001111@s.whatsapp.net',
+    senderNumber: '15550001111',
+    botIds: ['15559998888:10@s.whatsapp.net'],
+    downloadMedia: async (message) => {
+      downloaded = message;
+      return Buffer.from('pdf');
+    },
+    writeMediaFile: async () => '/tmp/quoted-ukeplan.pdf',
+    cacheDirs: { document: '/tmp' },
+  });
+
+  assert.equal(event.hasMedia, true);
+  assert.equal(event.mediaType, 'document');
+  assert.equal(event.mime, 'application/pdf');
+  assert.equal(event.fileName, 'Ukeplan_uke_37.pdf');
+  assert.deepEqual(event.mediaUrls, ['/tmp/quoted-ukeplan.pdf']);
+  assert.equal(event.quotedText, 'Liam weekly plan');
+  assert.equal(downloaded.key.id, 'quoted-document');
+  assert.equal(downloaded.key.fromMe, true);
+  assert.equal(downloaded.message.documentMessage.fileName, 'Ukeplan_uke_37.pdf');
+  console.log('  ✓ replies to documents carry the quoted file into the event');
+}
+
+{
   const event = await extractBridgeEvent({
     msg: {
       key: { id: 'doc-1', remoteJid: '15551234567@s.whatsapp.net', fromMe: false },
