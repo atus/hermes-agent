@@ -168,6 +168,7 @@ def _flood_cap_result(wait: float) -> "SendResult":
 
 _TELEGRAM_IMAGE_MIME_TO_EXT = {"image/png": ".png", "image/jpeg": ".jpg", "image/jpg": ".jpg", "image/webp": ".webp", "image/gif": ".gif"}
 _TELEGRAM_IMAGE_EXT_TO_MIME = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif"}
+_TELEGRAM_ANIMATION_EXTENSION = ".gif"
 
 
 def _coerce_duration_seconds(value: Any) -> Optional[int]:
@@ -4661,7 +4662,7 @@ class TelegramAdapter(BasePlatformAdapter):
         except Exception as exc:  # pragma: no cover - missing SDK
             logger.warning("[%s] InputMediaPhoto unavailable, falling back to per-image send: %s", self.name, exc)
             return await super().send_multiple_images(chat_id, images, metadata, human_delay)
-        is_anim = lambda url: not url.startswith("file://") and self._is_animation_url(url)  # noqa: E731
+        is_anim = self._is_animation_url
         animations = [img for img in images if is_anim(img[0])]
         photos = [img for img in images if not is_anim(img[0])]
         delivered = False
@@ -4718,7 +4719,7 @@ class TelegramAdapter(BasePlatformAdapter):
     async def send_image_file(
         self, chat_id: str, image_path: str, caption: Optional[str] = None, reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None, **kwargs) -> SendResult:
-        """Send a local image file natively as a Telegram photo."""
+        """Send a local image as a Telegram photo, or GIF as an animation."""
         async def _photo_failed(e: Exception) -> SendResult:
             error_str = str(e)
             # Dimension errors are expected for valid images Telegram refuses as photos → INFO.
@@ -4738,9 +4739,11 @@ class TelegramAdapter(BasePlatformAdapter):
                     "[%s] Failed to send Telegram local image as document, falling back to base adapter: %s",
                     self.name, doc_err, exc_info=True)
                 return await super(TelegramAdapter, self).send_image_file(chat_id, image_path, caption, reply_to, metadata=metadata)
+        # sendPhoto flattens GIFs; retain the shared local-file validation and retries.
+        media_key = "animation" if os.path.splitext(image_path)[1].lower() == _TELEGRAM_ANIMATION_EXTENSION else "photo"
         return await self._send_local_file(
-            "Image", image_path, chat_id, reply_to, metadata, "photo",
-            lambda f: {"photo": f, "caption": self._caption_1024(caption)}, _photo_failed)
+            "Image", image_path, chat_id, reply_to, metadata, media_key,
+            lambda f: {media_key: f, "caption": self._caption_1024(caption)}, _photo_failed)
 
     async def _send_local_file(
         self, label: str, path: str, chat_id, reply_to, metadata, media_key: str, build_kwargs, on_error,

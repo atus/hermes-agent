@@ -392,6 +392,7 @@ async def test_created_private_topic_thread_not_found_fails_without_root_fallbac
     ("method_name", "bot_method_name", "path_kw", "filename", "payload"),
     [
         ("send_image_file", "send_photo", "image_path", "photo.png", b"png-data"),
+        ("send_image_file", "send_animation", "image_path", "loop.gif", b"GIF89a"),
         ("send_document", "send_document", "file_path", "report.txt", b"report-data"),
         ("send_video", "send_video", "video_path", "clip.mp4", b"video-data"),
         ("send_voice", "send_voice", "audio_path", "clip.ogg", b"ogg-data"),
