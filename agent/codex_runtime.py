@@ -658,7 +658,8 @@ class _CodexResponseAssembler:
 
     def _on_function_call(self, event: Any, event_type: str) -> None:
         self.has_tool_calls = True
-        pending = self.pending_function_calls.get(str(_event_field(event, "item_id", "")))
+        item_id = self._announced_item_id(event, str(_event_field(event, "item_id", "")))
+        pending = self.pending_function_calls.get(item_id)
         if pending is None:
             return  # the item itself lands on output_item.done
         if "delta" in event_type:
@@ -680,6 +681,18 @@ class _CodexResponseAssembler:
             self.active_summary_index = summary_index
         self._safe(self.on_reasoning_delta, "on_reasoning_delta", reasoning_text)
 
+    def _announced_item_id(self, event: Any, item_id: str) -> str:
+        if item_id in self.announced_output_order:
+            return item_id
+        # Copilot rotates opaque item IDs between SSE frames; output_index still
+        # identifies the same item. Never match absent indexes to one another.
+        output_index = _event_field(event, "output_index")
+        if output_index is not None:
+            for announced_id, (_, index) in self.announced_output_order.items():
+                if index == output_index:
+                    return announced_id
+        return item_id
+
     def _on_item_done(self, event: Any, event_type: str) -> None:
         done_item = _event_field(event, "item")
         if done_item is None:
@@ -687,7 +700,7 @@ class _CodexResponseAssembler:
         self.output_items.append(done_item)
         # Reuse the announced position when known (fresh tail sequence for unannounced items); the .done
         # event's own output_index wins over the announced one.
-        done_id = str(_event_field(done_item, "id", ""))
+        done_id = self._announced_item_id(event, str(_event_field(done_item, "id", "")))
         announced_sequence, announced_index = self.announced_output_order.get(done_id, (None, None))
         if announced_sequence is None:
             announced_sequence, self.next_output_sequence = self.next_output_sequence, self.next_output_sequence + 1
