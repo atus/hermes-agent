@@ -94,6 +94,43 @@ def _hard_stop_config(**overrides) -> dict:
     return cfg
 
 
+def test_rotating_ids_do_not_halt():
+    """One Responses call must not acquire an empty-args twin during settlement."""
+    from agent.codex_runtime import _consume_codex_event_stream
+    from agent.codex_responses_adapter import _normalize_codex_response
+
+    agent = _make_agent("browser_exec", platform="telegram")
+    executed = []
+    messages = []
+
+    def handle(name, args, task_id, **kwargs):
+        executed.append(args)
+        if not args:
+            return json.dumps({"error": "No code provided"})
+        return json.dumps({"success": True, "exit_code": 0, "output": args["code"]})
+
+    with patch("model_tools.handle_function_call", side_effect=handle):
+        for step in range(7):
+            args = json.dumps({"code": f"print({step})", "session": "test"})
+            call = {"type": "function_call", "call_id": f"call_{step}", "name": "browser_exec"}
+            events = [
+                SimpleNamespace(type="response.output_item.added", output_index=0,
+                                item=SimpleNamespace(**call, id="added-id", arguments="", status="in_progress")),
+                SimpleNamespace(type="response.function_call_arguments.delta", output_index=0,
+                                item_id="delta-id", delta=args),
+                SimpleNamespace(type="response.output_item.done", output_index=0,
+                                item=SimpleNamespace(**call, id="done-id", arguments=args, status="completed")),
+                SimpleNamespace(type="response.completed", response=SimpleNamespace(status="completed", output=None)),
+            ]
+            response = _consume_codex_event_stream(events, model="test/model")
+            message, _ = _normalize_codex_response(response)
+            agent._execute_tool_calls_sequential(message, messages, "task-1")
+
+    assert agent._tool_guardrail_halt_decision is None
+    assert executed == [{"code": f"print({step})", "session": "test"} for step in range(7)]
+    assert [m["tool_call_id"] for m in messages] == [f"call_{step}" for step in range(7)]
+
+
 def test_gateway_platform_uses_hard_stop_default_without_cli_opt_in():
     agent = _make_agent("web_search", platform="telegram")
     args = {"query": "same"}
