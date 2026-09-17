@@ -94,12 +94,14 @@ def _hard_stop_config(**overrides) -> dict:
     return cfg
 
 
-def test_rotating_ids_do_not_halt():
+@pytest.mark.parametrize("executor", ["sequential", "concurrent"])
+@pytest.mark.parametrize("platform", ["telegram", "whatsapp"])
+def test_rotating_ids_do_not_halt(executor, platform):
     """One Responses call must not acquire an empty-args twin during settlement."""
     from agent.codex_runtime import _consume_codex_event_stream
     from agent.codex_responses_adapter import _normalize_codex_response
 
-    agent = _make_agent("browser_exec", platform="telegram")
+    agent = _make_agent("browser_exec", platform=platform)
     executed = []
     messages = []
 
@@ -124,7 +126,7 @@ def test_rotating_ids_do_not_halt():
             ]
             response = _consume_codex_event_stream(events, model="test/model")
             message, _ = _normalize_codex_response(response)
-            agent._execute_tool_calls_sequential(message, messages, "task-1")
+            getattr(agent, f"_execute_tool_calls_{executor}")(message, messages, "task-1")
 
     assert agent._tool_guardrail_halt_decision is None
     assert executed == [{"code": f"print({step})", "session": "test"} for step in range(7)]
