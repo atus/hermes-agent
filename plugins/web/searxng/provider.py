@@ -32,6 +32,14 @@ class SearXNGWebSearchProvider(BaseWebSearchProvider):
         if failure is not None:
             return failure
         raw_results = data.get("results", [])
+        failed_engines = data.get("unresponsive_engines", [])
+        # HTTP 200 can hide an upstream outage; keep useful partial results.
+        if not raw_results and failed_engines:
+            details = "; ".join(f"{engine}: {reason}" for engine, reason in failed_engines)
+            return search_fail(
+                f"SearXNG returned no results with upstream engine failures ({details}). "
+                "Retry later or check the instance's engine configuration."
+            )
         # SearXNG may return a score field; sort descending and cap to limit.
         sorted_results = sorted(raw_results, key=lambda r: float(r.get("score", 0)), reverse=True)[:limit]
         web_results = titled_rows(sorted_results, "content")
