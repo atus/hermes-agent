@@ -74,6 +74,40 @@ def _stream_completed_without_done():
     ]
 
 
+@pytest.mark.parametrize("arguments_done", [False, True])
+def test_rotating_id_arguments(arguments_done):
+    """Index correlation must retain interleaved arguments when item-done is omitted."""
+    events = []
+    for index in range(2):
+        events.append(SimpleNamespace(
+            type="response.output_item.added", output_index=index,
+            item=SimpleNamespace(type="function_call", id=f"added-{index}",
+                                 call_id=f"call-{index}", name="record", arguments=""),
+        ))
+    # Reverse delta order to catch accidental use of the last announced call.
+    for index in (1, 0):
+        for chunk, delta in enumerate(['{"step":', str(index), '}']):
+            events.append(SimpleNamespace(
+                type="response.function_call_arguments.delta", output_index=index,
+                item_id=f"delta-{index}-{chunk}", delta=delta,
+            ))
+        if arguments_done:
+            events.append(SimpleNamespace(
+                type="response.function_call_arguments.done", output_index=index,
+                item_id=f"arguments-done-{index}", arguments=f'{{"final":{index}}}',
+            ))
+    events.append(SimpleNamespace(
+        type="response.completed", response=SimpleNamespace(status="completed", output=None),
+    ))
+
+    final = _consume_codex_event_stream(events, model="test/model")
+
+    field = "final" if arguments_done else "step"
+    assert [(item.call_id, item.arguments) for item in final.output] == [
+        (f"call-{index}", f'{{"{field}":{index}}}') for index in range(2)
+    ]
+
+
 def test_completed_without_done_settles_pending_function_call():
     final = _consume_codex_event_stream(_stream_completed_without_done(), model="gpt-test")
 
