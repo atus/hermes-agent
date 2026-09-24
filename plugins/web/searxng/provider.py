@@ -14,6 +14,24 @@ from plugins.web._common import BaseWebSearchProvider, http_get_json, provider_e
 logger = logging.getLogger(__name__)
 
 
+def _failure_details(failed_engines: Any) -> str:
+    if isinstance(failed_engines, dict):
+        failed_engines = list(failed_engines.items())
+    elif not isinstance(failed_engines, (list, tuple)):
+        failed_engines = [failed_engines]
+
+    details = []
+    for entry in failed_engines:
+        # Names and malformed entries must not break the outage/rescue path.
+        if not isinstance(entry, (list, tuple)) or len(entry) != 2:
+            details.append(str(entry))
+            continue
+
+        engine, reason = entry
+        details.append(f"{engine}: {reason}" if reason else str(engine))
+    return "; ".join(details)
+
+
 class SearXNGWebSearchProvider(BaseWebSearchProvider):
     """Search via a user-hosted SearXNG instance."""
 
@@ -35,7 +53,7 @@ class SearXNGWebSearchProvider(BaseWebSearchProvider):
         failed_engines = data.get("unresponsive_engines", [])
         # HTTP 200 can hide an upstream outage; keep useful partial results.
         if not raw_results and failed_engines:
-            details = "; ".join(f"{engine}: {reason}" for engine, reason in failed_engines)
+            details = _failure_details(failed_engines)
             return search_fail(
                 f"SearXNG returned no results with upstream engine failures ({details}). "
                 "Retry later or check the instance's engine configuration."

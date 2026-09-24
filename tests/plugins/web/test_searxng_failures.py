@@ -24,16 +24,30 @@ _ROWS = [
 
 
 @pytest.mark.parametrize(
-    "rows,metadata",
+    "rows,metadata,details",
     [
-        ([], {"unresponsive_engines": _FAILURES}),
-        ([], {"unresponsive_engines": []}),
-        ([], {}),
-        (_ROWS, {"unresponsive_engines": _FAILURES}),
+        ([], {"unresponsive_engines": _FAILURES},
+         "brave: too many requests; duckduckgo: CAPTCHA; google cse: too many requests; startpage: CAPTCHA"),
+        ([], {"unresponsive_engines": ["brave", "dd"]}, "brave; dd"),
+        ([], {"unresponsive_engines": {"brave": "CAPTCHA", "dd": None}}, "brave: CAPTCHA; dd"),
+        ([], {"unresponsive_engines": ["brave", ["dd", "CAPTCHA"], ["google", None]]},
+         "brave; dd: CAPTCHA; google"),
+        ([], {"unresponsive_engines": "brave"}, "brave"),
+        ([], {"unresponsive_engines": [["brave"], [], 7]}, "['brave']; []; 7"),
+        ([], {"unresponsive_engines": True}, "True"),
+        ([], {"unresponsive_engines": []}, None),
+        ([], {"unresponsive_engines": None}, None),
+        ([], {"unresponsive_engines": {}}, None),
+        ([], {}, None),
+        (_ROWS, {"unresponsive_engines": _FAILURES}, None),
+        (_ROWS, {"unresponsive_engines": ["brave", "dd"]}, None),
     ],
-    ids=["upstream-outage", "empty", "legacy-empty", "partial-success"],
+    ids=[
+        "upstream-outage", "names", "mapping", "mixed", "string", "malformed-entries",
+        "scalar", "empty", "null", "empty-mapping", "legacy-empty", "partial-success", "partial-names",
+    ],
 )
-def test_engine_failure_contract(monkeypatch, rows, metadata):
+def test_engine_failure_contract(monkeypatch, rows, metadata, details):
     monkeypatch.setenv("SEARXNG_URL", "http://searxng.example")
     response = httpx.Response(
         200,
@@ -46,9 +60,7 @@ def test_engine_failure_contract(monkeypatch, rows, metadata):
 
     if not rows and metadata.get("unresponsive_engines"):
         assert result["success"] is False
-        for engine, reason in _FAILURES:
-            assert engine in result["error"]
-            assert reason in result["error"]
+        assert f"upstream engine failures ({details})" in result["error"]
         assert "synthetic query" not in result["error"]
         assert "http://searxng.example" not in result["error"]
         return
@@ -61,17 +73,26 @@ def test_engine_failure_contract(monkeypatch, rows, metadata):
 
 
 @pytest.mark.parametrize(
+    "failures,error_detail",
+    [
+        (_FAILURES, "CAPTCHA"),
+        (["brave", "dd"], "brave; dd"),
+        ({"brave": "CAPTCHA", "dd": None}, "brave: CAPTCHA; dd"),
+    ],
+    ids=["pairs", "names", "mapping"],
+)
+@pytest.mark.parametrize(
     "scenario",
     ["rescued", "disabled", "ring-failed", "empty", "partial"],
 )
-def test_dispatch_rescue_contract(monkeypatch, scenario):
+def test_dispatch_rescue_contract(monkeypatch, scenario, failures, error_detail):
     from hermes_constants import get_hermes_home
     from plugins.web import keyless_mcp
     from tools.web_result_cache import search_memo
     from tools.web_tools import web_search_tool
 
     rows = _ROWS if scenario == "partial" else []
-    failures = [] if scenario == "empty" else _FAILURES
+    failures = [] if scenario == "empty" else failures
     payload = json.dumps({"results": rows, "unresponsive_engines": failures}).encode()
     requests = []
 
@@ -132,10 +153,10 @@ def test_dispatch_rescue_contract(monkeypatch, scenario):
         assert first["success"] is True
         assert first["data"]["rescued_from"] == "searxng"
         assert first["data"]["web"][0]["url"] == "https://rescue.example"
-        assert "CAPTCHA" in first["data"]["backend_error"]
+        assert error_detail in first["data"]["backend_error"]
     else:
         assert first["success"] is False
-        assert "CAPTCHA" in first["error"]
+        assert error_detail in first["error"]
         if scenario == "ring-failed":
             assert "synthetic ring outage" in first["error"]
 
