@@ -20,6 +20,7 @@ import {
   extractBridgeEvent,
   inboundReadReceiptKeys,
   mediaPayloadForFile,
+  normalizeWhatsAppId,
   pollCreationMessageFromPayload,
   pollUpdateForAggregation,
 } from './bridge_helpers.js';
@@ -174,7 +175,12 @@ import {
   console.log('  ✓ cached quoted documents retain their existing path without a download');
 }
 
-{
+for (const [botId, fromMe] of [
+  [normalizeWhatsAppId('15559998888:10@s.whatsapp.net'), true],
+  ['15559998888:10@s.whatsapp.net', true],
+  [normalizeWhatsAppId('15550001111:10@s.whatsapp.net'), false],
+  [normalizeWhatsAppId('15559998888:10@lid'), false],
+]) {
   let downloaded = null;
   const event = await extractBridgeEvent({
     msg: {
@@ -207,7 +213,7 @@ import {
     chatId: '120363001234567890@g.us',
     senderId: '15550001111@s.whatsapp.net',
     senderNumber: '15550001111',
-    botIds: ['15559998888:10@s.whatsapp.net'],
+    botIds: [botId],
     downloadMedia: async (message) => {
       downloaded = message;
       return Buffer.from('pdf');
@@ -223,7 +229,7 @@ import {
   assert.deepEqual(event.mediaUrls, ['/tmp/quoted-ukeplan.pdf']);
   assert.equal(event.quotedText, 'Liam weekly plan');
   assert.equal(downloaded.key.id, 'quoted-document');
-  assert.equal(downloaded.key.fromMe, true);
+  assert.equal(downloaded.key.fromMe, fromMe, `quoted author identity: ${botId}`);
   assert.equal(downloaded.message.documentMessage.fileName, 'Ukeplan_uke_37.pdf');
   console.log('  ✓ replies to documents carry the quoted file into the event');
 }

@@ -25,7 +25,8 @@ function whatsappAccountId(value) {
     return raw.split(':', 1)[0];
   }
 
-  const user = raw.slice(0, separator).split(':', 1)[0];
+  // normalizeWhatsAppId turns the linked-device colon into an @.
+  const user = raw.slice(0, separator).replace(/[:@]\d+$/, '');
   return `${user}${raw.slice(separator)}`;
 }
 
