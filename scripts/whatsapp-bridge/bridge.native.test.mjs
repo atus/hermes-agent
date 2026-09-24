@@ -20,6 +20,7 @@ import {
   extractBridgeEvent,
   inboundReadReceiptKeys,
   mediaPayloadForFile,
+  normalizeWhatsAppId,
   pollCreationMessageFromPayload,
   pollUpdateForAggregation,
 } from './bridge_helpers.js';
@@ -127,6 +128,120 @@ import {
   assert.equal(event.hasQuotedMessage, true);
   assert.equal(event.body, 'approved');
   console.log('  ✓ inbound quoted metadata includes quoted text');
+}
+
+// -- cached quoted documents must not be downloaded again -----------------
+{
+  const chatId = '120363001234567890@g.us';
+  const cachedUrls = ['/cache/document/weekly-plan.pdf'];
+  let downloadCalls = 0;
+  const event = await extractBridgeEvent({
+    msg: {
+      key: { id: 'cached-document-reply', remoteJid: chatId, fromMe: false },
+      message: {
+        extendedTextMessage: {
+          text: 'parse the first two pages',
+          contextInfo: {
+            stanzaId: 'cached-document',
+            participant: '15559998888@s.whatsapp.net',
+            quotedMessage: {
+              documentMessage: { fileName: 'weekly-plan.pdf', mimetype: 'application/pdf' },
+            },
+          },
+        },
+      },
+    },
+    chatId,
+    senderId: '15550001111@s.whatsapp.net',
+    senderNumber: '15550001111',
+    lookupQuotedMedia: (quotedChatId, messageId) => {
+      assert.equal(quotedChatId, chatId);
+      assert.equal(messageId, 'cached-document');
+      return { hasMedia: true, mediaType: 'document', mediaUrls: cachedUrls };
+    },
+    downloadMedia: async () => {
+      downloadCalls += 1;
+      throw new Error('cached document must not be downloaded again');
+    },
+  });
+
+  assert.equal(downloadCalls, 0);
+  assert.deepEqual(event.quotedMediaUrls, cachedUrls);
+  assert.equal(event.quotedMediaType, 'document');
+  assert.equal(event.quotedText, '[Document: weekly-plan.pdf]');
+  assert.equal(event.body, 'parse the first two pages');
+  assert.equal(event.hasMedia, false);
+  assert.deepEqual(event.mediaUrls, []);
+  console.log('  ✓ cached quoted documents retain their existing path without a download');
+}
+
+for (const [envelopes, botId, fromMe] of [
+  [],
+  ['documentWithCaptionMessage'],
+  ['ephemeralMessage'],
+  ['viewOnceMessage'],
+  ['viewOnceMessageV2'],
+  ['ephemeralMessage', 'documentWithCaptionMessage'],
+].flatMap(envelopes => [
+  [normalizeWhatsAppId('15559998888:10@s.whatsapp.net'), true],
+  ['15559998888:10@s.whatsapp.net', true],
+  [normalizeWhatsAppId('15550001111:10@s.whatsapp.net'), false],
+  [normalizeWhatsAppId('15559998888:10@lid'), false],
+].map(([botId, fromMe]) => [envelopes, botId, fromMe]))) {
+  let downloaded = null;
+  const quotedMessage = envelopes.reduceRight((message, envelope) => ({
+    [envelope]: { message },
+  }), {
+    documentMessage: {
+      caption: 'Liam weekly plan',
+      fileName: 'Ukeplan_uke_37.pdf',
+      mimetype: 'application/pdf',
+    },
+  });
+  const event = await extractBridgeEvent({
+    msg: {
+      key: {
+        id: 'reply-to-document',
+        remoteJid: '120363001234567890@g.us',
+        participant: '15550001111@s.whatsapp.net',
+        fromMe: false,
+      },
+      pushName: 'Tester',
+      messageTimestamp: 123,
+      message: {
+        extendedTextMessage: {
+          text: 'parse the first two pages',
+          contextInfo: {
+            stanzaId: 'quoted-document',
+            participant: '15559998888@s.whatsapp.net',
+            remoteJid: '120363001234567890@g.us',
+            quotedMessage,
+          },
+        },
+      },
+    },
+    chatId: '120363001234567890@g.us',
+    senderId: '15550001111@s.whatsapp.net',
+    senderNumber: '15550001111',
+    botIds: [botId],
+    downloadMedia: async (message) => {
+      downloaded = message;
+      return Buffer.from('pdf');
+    },
+    writeMediaFile: async () => '/tmp/quoted-ukeplan.pdf',
+    cacheDirs: { document: '/tmp' },
+  });
+
+  assert.equal(event.hasMedia, true, `quoted envelopes: ${envelopes.join('/') || 'bare'}`);
+  assert.equal(event.mediaType, 'document');
+  assert.equal(event.mime, 'application/pdf');
+  assert.equal(event.fileName, 'Ukeplan_uke_37.pdf');
+  assert.deepEqual(event.mediaUrls, ['/tmp/quoted-ukeplan.pdf']);
+  assert.equal(event.quotedText, 'Liam weekly plan');
+  assert.equal(downloaded.key.id, 'quoted-document');
+  assert.equal(downloaded.key.fromMe, fromMe, `quoted author identity: ${botId}`);
+  assert.equal(downloaded.message, quotedMessage);
+  console.log('  ✓ replies to documents carry the quoted file into the event');
 }
 
 // -- reply to uncaptioned quoted media resolves the cached original file --
@@ -580,7 +695,6 @@ import {
       senderId: '15550001111@s.whatsapp.net',
       senderNumber: '15550001111',
       botIds: ['15559998888@s.whatsapp.net'],
-      downloadMedia: async () => Buffer.from(''),
     });
     assert.equal(event.quotedMessageId, 'original-id', fixture);
     assert.equal(event.hasQuotedMessage, true, fixture);
