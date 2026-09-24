@@ -558,7 +558,7 @@ export async function extractBridgeEvent({
   // A reply can be the only surviving handle to a document sent from another
   // linked device. Carry that quoted document into the inbound event instead
   // of exposing only its caption and forcing the user to upload it again.
-  const quotedDocument = contextInfo?.quotedMessage?.documentMessage;
+  const quotedDocument = unwrapMessageEnvelopes(contextInfo?.quotedMessage)?.documentMessage;
   if (!hasMedia && !quotedMediaUrls.length && quotedDocument) {
     const participant = whatsappAccountId(contextInfo.participant);
     const fromMe = botIds.some(id => whatsappAccountId(id) === participant);

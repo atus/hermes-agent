@@ -175,13 +175,29 @@ import {
   console.log('  ✓ cached quoted documents retain their existing path without a download');
 }
 
-for (const [botId, fromMe] of [
+for (const [envelopes, botId, fromMe] of [
+  [],
+  ['documentWithCaptionMessage'],
+  ['ephemeralMessage'],
+  ['viewOnceMessage'],
+  ['viewOnceMessageV2'],
+  ['ephemeralMessage', 'documentWithCaptionMessage'],
+].flatMap(envelopes => [
   [normalizeWhatsAppId('15559998888:10@s.whatsapp.net'), true],
   ['15559998888:10@s.whatsapp.net', true],
   [normalizeWhatsAppId('15550001111:10@s.whatsapp.net'), false],
   [normalizeWhatsAppId('15559998888:10@lid'), false],
-]) {
+].map(([botId, fromMe]) => [envelopes, botId, fromMe]))) {
   let downloaded = null;
+  const quotedMessage = envelopes.reduceRight((message, envelope) => ({
+    [envelope]: { message },
+  }), {
+    documentMessage: {
+      caption: 'Liam weekly plan',
+      fileName: 'Ukeplan_uke_37.pdf',
+      mimetype: 'application/pdf',
+    },
+  });
   const event = await extractBridgeEvent({
     msg: {
       key: {
@@ -199,13 +215,7 @@ for (const [botId, fromMe] of [
             stanzaId: 'quoted-document',
             participant: '15559998888@s.whatsapp.net',
             remoteJid: '120363001234567890@g.us',
-            quotedMessage: {
-              documentMessage: {
-                caption: 'Liam weekly plan',
-                fileName: 'Ukeplan_uke_37.pdf',
-                mimetype: 'application/pdf',
-              },
-            },
+            quotedMessage,
           },
         },
       },
@@ -222,7 +232,7 @@ for (const [botId, fromMe] of [
     cacheDirs: { document: '/tmp' },
   });
 
-  assert.equal(event.hasMedia, true);
+  assert.equal(event.hasMedia, true, `quoted envelopes: ${envelopes.join('/') || 'bare'}`);
   assert.equal(event.mediaType, 'document');
   assert.equal(event.mime, 'application/pdf');
   assert.equal(event.fileName, 'Ukeplan_uke_37.pdf');
@@ -230,7 +240,7 @@ for (const [botId, fromMe] of [
   assert.equal(event.quotedText, 'Liam weekly plan');
   assert.equal(downloaded.key.id, 'quoted-document');
   assert.equal(downloaded.key.fromMe, fromMe, `quoted author identity: ${botId}`);
-  assert.equal(downloaded.message.documentMessage.fileName, 'Ukeplan_uke_37.pdf');
+  assert.equal(downloaded.message, quotedMessage);
   console.log('  ✓ replies to documents carry the quoted file into the event');
 }
 
@@ -685,7 +695,6 @@ for (const [botId, fromMe] of [
       senderId: '15550001111@s.whatsapp.net',
       senderNumber: '15550001111',
       botIds: ['15559998888@s.whatsapp.net'],
-      downloadMedia: async () => Buffer.from(''),
     });
     assert.equal(event.quotedMessageId, 'original-id', fixture);
     assert.equal(event.hasQuotedMessage, true, fixture);
