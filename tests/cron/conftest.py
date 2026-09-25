@@ -53,6 +53,12 @@ def _default_cron_test_model(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_cron_runtime(tmp_path, monkeypatch):
+    """Do not discover the live install's Python when exercising script launches."""
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "runtime"))
+
+
+@pytest.fixture(autouse=True)
 def _reset_session_context_vars():
     """Restore session ContextVars around cron tests that call run_job directly.
 

@@ -317,7 +317,7 @@ def _resolve_script_path(script_path: str) -> tuple[Optional[Path], Optional[str
 def _script_argv(path: Path) -> tuple[Optional[list[str]], dict[str, str], Optional[str]]:
     """``(argv, env_overlay, error)`` for a validated script. Interpreter by extension — the
     shebang is deliberately NOT honoured (small, auditable surface): ``.sh``/``.bash`` → bash,
-    else ``sys.executable`` (Windows uv-venv overlay gets the .pth bootstrap)."""
+    else the managed runtime or ``sys.executable`` (legacy Windows venvs get a .pth bootstrap)."""
     if path.suffix.lower() in {".sh", ".bash"}:
         # which() finds Git Bash on Windows; None there → clear error instead of a "[WinError 2]".
         _bash = shutil.which("bash") or ("/bin/bash" if os.path.isfile("/bin/bash") else None)
@@ -328,6 +328,22 @@ def _script_argv(path: Path) -> tuple[Optional[list[str]], dict[str, str], Optio
                 "or rewrite the script as Python (.py)."
             )
         return [_bash, str(path)], {}, None
+
+    from hermes_cli._launchers import resolve_store_python, runtime_command
+
+    repo = Path(__file__).resolve().parents[1]
+    managed_python = resolve_store_python(repo)
+    if managed_python is not None:
+        # Store Python alone has no dependencies. Select and lease them at child start,
+        # then restore direct-script argv/import semantics without weakening env sanitization.
+        bootstrap = (
+            "script = sys.argv[1];"
+            "sys.argv = sys.argv[1:];"
+            "sys.path.insert(0, os.path.dirname(os.path.abspath(script)));"
+            "runpy.run_path(script, run_name='__main__')"
+        )
+        return runtime_command(repo, [str(path)], code=bootstrap, python=managed_python), {}, None
+
     python_exe, env_overlay = _windows_cron_python_invocation(sys.executable)
     if env_overlay:
         return _windows_cron_bootstrap_argv(python_exe, env_overlay, str(path)), env_overlay, None
