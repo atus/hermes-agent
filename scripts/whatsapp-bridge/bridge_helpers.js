@@ -635,7 +635,9 @@ export function resolvePollVoterId({ voterId, pollUpdateKey, voteMessageKey, pol
     chatId,
   ];
   for (const candidate of candidates) {
-    if (candidate) return candidate;
+    if (candidate) {
+      return candidate;
+    }
   }
   return '';
 }
