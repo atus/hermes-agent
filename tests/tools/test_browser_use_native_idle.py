@@ -57,6 +57,94 @@ def test_owned_native_timer_yields_to_durable_deadline(tmp_path, monkeypatch):
     assert not list(life._state_dir().glob("*.json"))
 
 
+@pytest.mark.parametrize("order", [("", "default"), ("default", "")])
+def test_default_alias_retains_backend(tmp_path, monkeypatch, order):
+    from agent import chat_completion_helpers as turn
+    from tools import browser_tool as bt
+    from tools import browser_tool_cdp as cdp
+    from tools import browser_tool_lifecycle as worker
+
+    monkeypatch.setattr(worker, "_start_browser_cleanup_thread", lambda: None)
+    monkeypatch.setattr(life, "_homes", set())
+    monkeypatch.setattr(bt, "_active_sessions", {})
+    monkeypatch.setattr(bt, "_session_last_activity", {})
+    monkeypatch.setattr(bt, "_session_owner_homes", {})
+    monkeypatch.setattr(bu, "_find_cli", lambda: ["isolated-harness"])
+    monkeypatch.setattr(bu, "_read_browser_cfg", lambda: {"inactivity_timeout": 300})
+    monkeypatch.setattr(bu, "_base_subprocess_env", lambda: {})
+    monkeypatch.setattr(bu, "_real_profile_consented", lambda: False)
+    monkeypatch.setattr(bu, "_attach_vault_supervisor", lambda *args: None)
+    monkeypatch.setattr(cdp, "_get_cdp_override", lambda: "")
+    monkeypatch.setattr(native._cloud, "_get_cloud_provider", lambda: None)
+    monkeypatch.setattr(native._cloud, "_get_browser_engine", lambda: "chrome")
+    monkeypatch.setattr(native._cloud, "_is_headed_mode", lambda: False)
+    monkeypatch.setattr(bt, "_is_camofox_mode", lambda: False)
+    monkeypatch.setattr(native, "_browser_command_preflight", lambda: {"browser_cmd": "isolated-native"})
+    monkeypatch.setattr(native, "_prepare_session_socket_dir", lambda name: str(tmp_path))
+    monkeypatch.setattr(native, "_ensure_screen_for_headed_chromium", lambda: None)
+    monkeypatch.setattr(native, "_agent_browser_command_env", lambda directory: {"AGENT_BROWSER_IDLE_TIMEOUT_MS": "120000"})
+    monkeypatch.setattr(native, "_apply_chromium_sandbox_args", lambda env: None)
+    monkeypatch.setattr(native, "_sandbox_wrap", lambda cmd, env, directory: (cmd, env))
+    monkeypatch.setattr(native, "_browser_in_sandbox", lambda: False)
+    clock = [1000]
+    monkeypatch.setattr(life.time, "time", lambda: clock[0])
+    monkeypatch.setattr(life, "_transport", lambda *args: {"pid": 101, "start": 1, "kind": "cdp"})
+    allocated, spawned, executed = [], [], []
+
+    def session_info(key):
+        if key not in bt._active_sessions:
+            allocated.append(key)
+            bt._active_sessions[key] = {"session_name": "h_owned", "bb_session_id": None, "features": {}}
+        return bt._active_sessions[key]
+
+    def spawn(cmd, env, directory, command, payload):
+        spawned.append(env.get("AGENT_BROWSER_IDLE_TIMEOUT_MS"))
+        tmp_path.joinpath(f"_stdout_{command}").write_text(json.dumps(
+            {"success": True, "data": {"cdpUrl": "ws://127.0.0.1:47000/owned"}}))
+        tmp_path.joinpath(f"_stderr_{command}").write_text("")
+        return SimpleNamespace(wait=lambda **kw: None, returncode=0)
+
+    def execute(cmd, code, env, timeout):
+        executed.append((env["BH_RUNTIME_DIR"], env["BU_NAME"], env["BU_CDP_WS"]))
+        return subprocess.CompletedProcess(cmd, 0, "ok", "")
+
+    monkeypatch.setattr(native, "_get_session_info", session_info)
+    monkeypatch.setattr(native, "_popen_agent_browser", spawn)
+    monkeypatch.setattr(bu, "_run_cli_killing_process_group", execute)
+    for session in order:
+        clock[0] += 100
+        options = {"session": session} if session else {}
+        result = json.loads(bu.browser_exec("print('ok')", task_id="saved", **options))
+        assert result.get("success"), result
+    assert len(allocated) == len(spawned) == 1
+    assert spawned == [None], "durable ownership must disable the native idle timer"
+    assert len(set(executed)) == 1, "aliases must use one physical runtime and endpoint"
+    path = next(life._owned_paths())
+    record = life._read_record(path)
+    key = allocated[0]
+    assert record["backend_key"] == key, "reuse must not change the original allocation's authority"
+    assert life._has_owned_backend(key)
+    assert key == bu._backend_cache_key("saved") == bu._backend_cache_key("saved", "default")
+    assert bu._backend_cache_key("other", "default") != key
+    assert bu._backend_cache_key("saved", "research") != key
+    association = bt._active_sessions[key]
+    monkeypatch.setattr(turn, "is_persistent_env", lambda key: True)
+    monkeypatch.setattr(turn, "_ra", lambda: SimpleNamespace(cleanup_browser=worker.cleanup_browser))
+    turn.cleanup_task_resources(SimpleNamespace(verbose_logging=False), "saved")
+    assert bt._active_sessions[key] is association, "turn cleanup must retain the owned allocation"
+    with life._retain_owner_browser("saved"):
+        worker.cleanup_browser("saved")  # The /new and /reset full-cleanup browser seam.
+    assert bt._active_sessions[key] is association
+    detached = life._read_record(path)
+    assert detached["cleanup"] == "detached"
+    assert detached["last_execution"] == record["last_execution"]
+    bt._session_last_activity[key] = 0  # Native activity does not see retained CDP traffic.
+    clock[0] += 150
+    worker._cleanup_inactive_browser_sessions()
+    assert bt._active_sessions[key] is association
+    assert life._read_record(path)["backend_key"] == key
+
+
 def test_dead_harness_cold_spawn_keeps_idle_ownership(tmp_path, monkeypatch):
     from tools import browser_tool as bt
     from tools import browser_tool_cdp as cdp

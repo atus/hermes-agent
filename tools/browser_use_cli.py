@@ -299,7 +299,12 @@ def _served_profile_tag() -> str:
 
 
 def _backend_cache_key(task_id: Optional[str], session_name: str = "") -> str:
-    """Session-cache key for a backend browser: named sessions get their own; served profiles get their own."""
+    """Omitted and explicit ``default`` alias the owner's primary backend.
+
+    Other names isolate allocations per owner; served profiles isolate every key.
+    Ownership registration, routing and binding all use this canonical key.
+    """
+    session_name = "" if session_name == "default" else session_name
     key = f"bu-named-{session_name}" if session_name else (task_id or "browser-exec-default")
     if session_name and task_id:
         import hashlib
