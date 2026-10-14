@@ -382,11 +382,11 @@ name = os.environ["BU_NAME"]
 async def handle(reader, writer):
     req = json.loads(await reader.readline())
     if req.get("meta") == "shutdown":
-        failed = os.path.exists(os.environ["FAIL_STOP"])
+        failed = os.path.exists(os.environ.get("FAIL_STOP", ""))
         response = {"error": "cloud stop failed"} if failed else {"ok": True}
     else:
         failed = False
-        response = {"pong": True, "pid": os.getpid(), "browser_kind": "cloud"}
+        response = {"pong": True, "pid": os.getpid(), "browser_kind": os.environ.get("PEER_KIND", "cloud")}
     writer.write((json.dumps(response) + "\\n").encode())
     await writer.drain()
     writer.close()
@@ -396,6 +396,65 @@ ipc.pid_path(name).write_text(str(os.getpid()))
 asyncio.run(ipc.serve(name, handle))
 ''')
     return package.parent
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("replacement", [False, True])
+def test_crashed_owned_runtime_recovers(fake_harness, tmp_path, monkeypatch, replacement):
+    import os
+    import sys
+    import time
+
+    env = {**os.environ, "PYTHONPATH": str(fake_harness), "PEER_KIND": "cdp"}
+    monkeypatch.setattr(bu, "_base_subprocess_env", lambda: dict(env))
+    monkeypatch.setattr(life.time, "time", lambda: 1000)
+    peers = []
+
+    def start_peer(scoped):
+        peer = subprocess.Popen([sys.executable, "-m", "browser_harness.daemon"], env=scoped)
+        peers.append(peer)
+        deadline = time.monotonic() + 10
+        runtime = life.Path(scoped["BH_RUNTIME_DIR"])
+        while not runtime.joinpath("bu.sock").exists() and time.monotonic() < deadline:
+            time.sleep(.05)
+        assert runtime.joinpath("bu.sock").exists()
+        return peer, runtime
+
+    try:
+        with life._execution(env, "owner", "crash"):
+            peer, runtime = start_peer(env)
+        path = next(life._state_dir().glob("*.json"))
+        assert life._read_record(path)["pid"] == peer.pid
+        peer.kill()  # Only the disposable fake peer: simulate abrupt daemon death.
+        peer.wait(timeout=5)
+        pidfile = runtime / "bu.pid"
+        assert pidfile.exists() and runtime.joinpath("bu.sock").exists()
+        if replacement:
+            # A replacement startup need not answer IPC yet; it is never ours.
+            pidfile.write_text(str(os.getpid()))
+        monkeypatch.setattr(life.time, "time", lambda: 2000)
+        life._expire_owned()
+        if replacement:
+            assert path.exists(), "uncertain replacement must retain cleanup authority"
+            assert pidfile.read_text() == str(os.getpid())
+            assert runtime.joinpath("bu.sock").exists()
+            assert life._read_record(path)["cleanup"] == "retry"
+            return
+        assert not path.exists()
+        assert not pidfile.exists(), "forgetting ownership must not strand stale artifacts"
+        assert not runtime.joinpath("bu.sock").exists()
+        with life._execution(env, "owner", "crash") as fresh:
+            new_peer, new_runtime = start_peer(env)
+            assert new_runtime == runtime
+            assert not fresh.get("pid")
+        assert life._read_record(path)["pid"] == new_peer.pid
+        life._stop_owned()
+        assert new_peer.wait(timeout=5) == 0
+    finally:
+        for peer in peers:
+            if peer.poll() is None:
+                peer.kill()
+                peer.wait(timeout=5)
 
 
 def test_real_ipc_shutdown_retries_cloud_failure(fake_harness, tmp_path, monkeypatch):
