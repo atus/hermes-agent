@@ -191,6 +191,8 @@ def _scope_env(env, home, name, runtime):
 
 @contextlib.contextmanager
 def _execution(env, owner, name):
+    from tools.browser_use_cli import _backend_cache_key
+    backend_key = _backend_cache_key(owner, name)
     home = Path(get_hermes_home()).resolve()
     owner = str(owner or "default")
     name = name or "default"
@@ -211,6 +213,7 @@ def _execution(env, owner, name):
         record = record or {
             "version": 1, "home": str(home), "owner": owner, "name": name,
             "runtime": str(runtime), "cleanup": "active"}
+        record.setdefault("backend_key", backend_key)
         record["cleanup"] = "active"
         record.setdefault("last_execution", time.time())
         _write_record(path, record)
