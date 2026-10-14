@@ -273,6 +273,10 @@ cat "$latch"
         monkeypatch.setenv("BROWSER_CDP_URL", "http://127.0.0.1:9400")
         assert drive() == drive(session="research") == "http://127.0.0.1:9400"
 
+        # The fake CLI has no IPC peer: mock only the supported shutdown driver.
+        from tools import browser_use_lifecycle as lifecycle
+        monkeypatch.setattr(lifecycle, "_stop_record",
+                            lambda record: tmp_path.joinpath("daemon-" + record["name"]).unlink())
         cleanup_all_browsers()
         monkeypatch.setenv("BROWSER_CDP_URL", "http://127.0.0.1:9401")
         assert drive() == drive(session="research") == "http://127.0.0.1:9401"
@@ -459,7 +463,7 @@ class TestBackendCdpResolution:
         assert _fake_managed_chromium == [("t1", "get", ("cdp-url",))]
         env = self._env()
         assert bu_cli._resolve_backend_cdp(env, "t1", session_name="r7k2") is None
-        assert _fake_managed_chromium[-1][0] == "bu-named-r7k2"  # named session → its own Chromium
+        assert _fake_managed_chromium[-1][0] == bu_cli._backend_cache_key("t1", "r7k2")
 
     def test_packaged_chromium_launch_failure_is_an_error(self, monkeypatch):
         monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override", lambda: "")
@@ -512,10 +516,8 @@ class TestBackendCdpResolution:
         assert "bu:r7k2" in result["output"]
         assert "ws:wss://browser.example/cdp/bu-named-r7k2" in result["output"]
 
-    def test_named_session_key_stable_across_tasks(self, monkeypatch):
-        """The same session name maps to the same provider cache key no
-        matter which task calls it — that is what lets a follow-up call
-        reattach to the same cloud browser."""
+    def test_named_session_key_isolated_across_owners(self, monkeypatch):
+        """A name resumes within its owner, never a different conversation."""
 
         seen = []
         monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override", lambda: "")
@@ -527,7 +529,8 @@ class TestBackendCdpResolution:
         env1, env2 = {}, {}
         assert bu_cli._resolve_backend_cdp(env1, "task-A", session_name="research") is None
         assert bu_cli._resolve_backend_cdp(env2, "task-B", session_name="research") is None
-        assert seen == ["bu-named-research", "bu-named-research"]
+        assert seen[0] != seen[1]
+        assert seen[0] == bu_cli._backend_cache_key("task-A", "research")
 
     def test_named_session_direct_api_bu_cloud_still_skips_provider(
         self, tmp_path, monkeypatch
@@ -607,12 +610,11 @@ class TestOwnTabPreamble:
         monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
         return json.loads(bu_cli.browser_exec("print('payload')", session=session))
 
-    def test_named_shared_browser_gets_preamble(self, tmp_path, monkeypatch):
+    def test_named_shared_browser_adds_no_second_tab(self, tmp_path, monkeypatch):
+        """Pinned harness 0.1.13 owns the dedicated tab; the adapter must not create another."""
         result = self._run(tmp_path, monkeypatch, session="r7k2", shared_cdp="http://127.0.0.1:9222")
         assert result["success"] is True
-        assert "_hermes_ensure_own_tab" in result["output"]
-        # model code still present, after the preamble
-        assert result["output"].index("_hermes_ensure_own_tab") < result["output"].index("print('payload')")
+        assert result["output"] == "print('payload')"
 
     def test_named_packaged_chromium_skips_preamble(self, tmp_path, monkeypatch):
         """Each named session launches its own packaged Chromium — nothing to share a tab with."""
@@ -643,14 +645,6 @@ class TestOwnTabPreamble:
         monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
         result = json.loads(bu_cli.browser_exec("print(1)", session="r7k2"))
         assert "sentinel:unset" in result["output"]
-
-    def test_preamble_is_valid_python(self):
-        import ast
-
-        ast.parse(bu_cli._OWN_TAB_PREAMBLE)
-        # and composes with model code
-        ast.parse(bu_cli._OWN_TAB_PREAMBLE + "print('x')")
-
 
 class TestProviderPickerIntegration:
     """The `hermes tools` Browser Automation picker row (browser_backend
@@ -1039,7 +1033,7 @@ class TestLightpandaBackendResolution:
     def test_named_session_keys_its_own_process(self, monkeypatch):
         seen = self._setup(monkeypatch)
         assert bu_cli._resolve_backend_cdp({}, "t1", session_name="r7k2") is None
-        assert seen == ["bu-named-r7k2"]
+        assert seen == [bu_cli._backend_cache_key("t1", "r7k2")]
 
     def test_default_key_without_task(self, monkeypatch):
         seen = self._setup(monkeypatch)

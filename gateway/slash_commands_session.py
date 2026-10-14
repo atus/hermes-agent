@@ -118,16 +118,23 @@ class GatewaySessionCommandsMixin:
     # ------------------------------------------------------------------ /new, /reset
 
     async def _cleanup_old_agent_for_reset(self, session_key: str) -> None:
-        """Close the old agent's tool resources (sandboxes, browsers, subprocesses) before eviction.
-        Blocking work on the event loop (confirm-button click) → offloaded with a bounded timeout.
-        wait_for cancels the await, not the worker thread: a wedged teardown keeps running (or
-        leaks); the reset proceeds either way."""
+        """Retain only owned browsers for resume; clean all unrelated agent resources.
+
+        Client release stays off-loop and bounded, under the owning profile.
+        """
         _old_agent = self._cached_agent_for(session_key)
         if _old_agent is None:
             return
+
+        def detach():
+            from tools.browser_use_lifecycle import _retain_owner_browser
+            with _retain_owner_browser(getattr(_old_agent, "session_id", None)):
+                self._cleanup_agent_resources(_old_agent)
+
         try:
             await asyncio.wait_for(
-                self._run_housekeeping_in_executor(self._cleanup_agent_resources, _old_agent),
+                self._run_housekeeping_in_executor(
+                    self._run_release_in_profile_scope, detach, (), session_key),
                 timeout=_RESET_CLEANUP_TIMEOUT_S)
         except asyncio.TimeoutError:
             logger.warning(

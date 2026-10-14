@@ -744,6 +744,11 @@ def _spawn_and_collect(
     if engine != "lightpanda":
         _ensure_screen_for_headed_chromium()  # first command forks the daemon; a headed window needs the screen up
     browser_env = _agent_browser_command_env(task_socket_dir)
+    from tools.browser_use_lifecycle import _has_owned_backend
+    if _has_owned_backend(task_id):
+        # Only this durable owned backend hands native idle teardown to the
+        # lease-aware janitor; direct CDP traffic never refreshes the native timer.
+        browser_env.pop("AGENT_BROWSER_IDLE_TIMEOUT_MS", None)
 
     # Lightpanda rejects Chromium-only launch flags: strip current and legacy vars;
     # Chrome commands and fallback use the shared Chromium policy.

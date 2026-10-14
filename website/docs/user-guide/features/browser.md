@@ -79,7 +79,21 @@ The mode is a **driver** that composes with your configured browser backend: it 
 
 **Local browsing uses the packaged Chromium, not your own Chrome.** With no cloud provider or `/browser connect` endpoint configured, Hermes launches the same Chromium that the built-in tools use (installed via `hermes tools` → Browser Automation, driven through agent-browser) and points the Browser Use CLI at it. Your installed Chrome is never touched, so there is no `chrome://inspect` remote-debugging toggle to enable and no "Allow remote debugging?" popup — and it works on headless hosts with no Chrome at all. The browser is shared with the built-in stack's lifecycle: it is closed after `browser.inactivity_timeout`, at exit, and by the orphan sweep. To drive a browser you're signed in to, use `/browser connect` or the [real-profile toggle](#real-profile-browsing-use-your-own-logins).
 
-**Concurrent sessions:** `browser_exec` accepts a `session=<name>` argument that isolates browser work per name on every backend. Each name gets its own harness daemon (its own IPC socket, log, and state) and its own browser (a separate packaged Chromium locally, a separate cloud browser on cloud backends) — so parallel subagents or simultaneous chats no longer clobber a single shared connection. Omitting `session` uses the shared default daemon, which is fine for one-at-a-time browsing.
+**Concurrent sessions:** `browser_exec` accepts `session=<name>`. A logical name is scoped to the owning Hermes conversation/task **and profile**, including the unnamed `default` session. Reuse a name within the same conversation to continue its browser work; the same name in another conversation does not adopt that daemon. Each owner/name has a separate harness IPC directory. Managed local/cloud backends also have separate browser allocations; on an operator-supplied shared CDP browser, the pinned harness owns a dedicated tab for each non-default name. Hermes does not add a second blank tab.
+
+#### Idle retention and recovery
+
+The existing browser cleanup worker checks owned harness sessions every 30 seconds, using the owning profile's `browser.inactivity_timeout` setting. For a longer retention window, configure the relevant profile, for example:
+
+```bash
+hermes config set browser.inactivity_timeout 21600
+```
+
+An execution lease prevents cleanup from racing an active `browser_exec` call. The last execution timestamp, owner, exact IPC directory, daemon process generation and backend association are stored in private files under `<profile-home>/cache/browser-use/owned/`. CDP endpoints in those records can contain credentials: do not publish or copy the records into bug reports. Harness authentication/configuration is separate for each profile under `cache/browser-use/harness/`; an existing standalone harness login is not automatically imported. Profile browser API keys continue to work through the existing credential configuration.
+
+Gateway startup resumes cleanup of these records without waiting for another browser call. In the messaging gateway, `/new` and `/reset` detach only the old conversation's owned browser; terminal, background-process, computer-use, memory-provider and client cleanup still run normally. Resuming that conversation before its idle deadline reuses its runtime; after confirmed expiry it starts cold. Merely detaching or inspecting a record does not extend its idle deadline.
+
+Cleanup asks the identity-checked harness daemon to shut down; it does not issue `Browser.close` against a shared browser. Native cloud cleanup must acknowledge success before ownership is forgotten, and harness shutdown precedes provider release. A changed process generation, unavailable cloud cleanup authority, failed provider release or busy execution leaves the record for retry instead of force-killing or discarding it. Unowned pre-existing harness endpoints are never automatically adopted or swept. Existing browser/profile data is not deleted by this mechanism.
 
 To opt out and force the built-in browser tools, use `/browser use off`, or:
 

@@ -40,7 +40,7 @@ def test_browser_exec_child_environment(tmp_path, monkeypatch):
     monkeypatch.setattr("tools.browser_tool_cloud._get_cloud_provider", lambda: None)
     monkeypatch.setattr("tools.browser_tool_lightpanda_fallback._using_lightpanda_engine", lambda: False)
     def local_browser(task_id, command, args, **kwargs):
-        assert (task_id, command, args) == ("bu-named-research", "get", ["cdp-url"])
+        assert (task_id, command, args) == (bu._backend_cache_key("owner", "research"), "get", ["cdp-url"])
         return {"success": True, "data": {"cdpUrl": "ws://127.0.0.1:47000/private"}}
     monkeypatch.setattr(browser_tool_session, "_run_browser_command", local_browser)
     attached = []
