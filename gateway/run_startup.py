@@ -1137,6 +1137,14 @@ class GatewayStartupMixin:
     async def _start_recover_previous_run(self) -> None:
         """Plugins, relay, hooks, then crash/clean-exit recovery of processes and sessions."""
         from gateway.run import _hermes_home
+        from tools.browser_use_lifecycle import _rehydrate
+        from hermes_constants import get_hermes_home
+        with _log_suppressed(logging.WARNING, "Harness ownership recovery failed: %s"):
+            homes = [get_hermes_home()]
+            if getattr(self.config, "multiplex_profiles", False):
+                from gateway.run import _multiplex_profile_homes
+                homes.extend(home for _, home in _multiplex_profile_homes(self.config))
+            _rehydrate(homes)
         self._start_register_plugins_relay_hooks()
         # Plugins that load later (force re-discovery, install/enable nudge) re-wire live adapters (#87770).
         with _log_suppressed(logging.WARNING, "plugin re-wire subscription failed", exc_info=True):

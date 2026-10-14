@@ -106,14 +106,14 @@ def _emergency_cleanup_all_sessions():
 
 
 @contextlib.contextmanager
-def _session_owner_scope(task_id: str):
+def _session_owner_scope(task_id: str, *, owner_home=None):
     """Run under the Hermes home + secret scope owning ``task_id``'s session (no-op if unrecorded).
 
     The janitor thread is process-global, so each teardown must re-enter its OWN
     profile's scope rather than inherit the spawning profile's; never falls
     through to ``os.environ``.
     """
-    owner_home = _bt._session_owner_homes.get(task_id)
+    owner_home = owner_home or _bt._session_owner_homes.get(task_id)
     if owner_home is None:
         yield
         return
@@ -153,6 +153,8 @@ def _cleanup_inactive_browser_sessions():
 
     See #100738, #86402.
     """
+    from tools.browser_use_lifecycle import _expire_owned
+    _expire_owned()
     current_time = time.time()
 
     with _bt._cleanup_lock:
@@ -161,6 +163,9 @@ def _cleanup_inactive_browser_sessions():
 
     for task_id in sessions_to_cleanup:
         with _session_owner_scope(task_id):
+            from tools.browser_use_lifecycle import _has_owned_backend
+            if _has_owned_backend(task_id):
+                continue  # Harness leases and the owning profile's timeout take precedence.
             if _human_holds_shared_browser(task_id):
                 # A human took the bot's screen (login, 2FA) — the agent is idle BECAUSE they are working.
                 _update_session_activity(task_id)
@@ -402,9 +407,13 @@ def _reap_orphaned_browser_sessions():
     # under a live user. Owner liveness alone gates it — a dead owner still gets reaped.
     tracked_names.add(_bt._REAL_PROFILE_SESSION)
 
+    from tools.browser_use_lifecycle import _backend_names
+    harness_backends = _backend_names()
     reaped = 0
     for socket_dir in socket_dirs:
         session_name = os.path.basename(socket_dir).removeprefix("agent-browser-")
+        if session_name in harness_backends:
+            continue
         if session_name and _reap_socket_dir(socket_dir, session_name, tracked_names):
             reaped += 1
 
@@ -660,6 +669,8 @@ def _release_session_resources(task_id: str, session_info: Dict[str, Any]) -> No
     force-reap path (#100738), which skips the polite agent-browser/Camofox ``close`` that kept failing but
     must still release the cloud session and the local Chromium.
     """
+    from tools.browser_use_lifecycle import _stop_owned
+    _stop_owned(task_id)
     bb_session_id = session_info.get("bb_session_id", "unknown")
     _forget_session_tracking(task_id, session=True)
 
@@ -696,6 +707,8 @@ def _force_reap_browser_session(task_id: str) -> None:
 
 def _cleanup_single_browser_session(task_id: str) -> None:
     """Reap a single browser session by its exact session key."""
+    from tools.browser_use_lifecycle import _stop_owned
+    _stop_owned(task_id)
     _cdp._stop_cdp_supervisor(task_id)  # close our WebSocket BEFORE the backend tears down the endpoint
 
     # Camofox: managed persistence keeps the profile (cookies) across tasks; skip the full

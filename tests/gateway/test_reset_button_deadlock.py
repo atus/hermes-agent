@@ -21,6 +21,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from gateway.run import GatewayRunner
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.event import MessageEvent
 from gateway.session import SessionEntry, SessionSource, build_session_key
@@ -43,8 +44,6 @@ def _make_event(text: str) -> MessageEvent:
 def _make_runner_with_cached_agent(close_fn):
     """Build a bare GatewayRunner with a cached agent whose close() runs
     ``close_fn`` (used to simulate slow / blocking teardown)."""
-    from gateway.run import GatewayRunner
-
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(
         platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")}
@@ -83,7 +82,8 @@ def _make_runner_with_cached_agent(close_fn):
     # Enable the cache-lock path (this is what the button callback exercises)
     runner._agent_cache_lock = threading.RLock()
     agent = MagicMock()
-    agent.close = close_fn
+    agent.release_clients = close_fn
+    agent.session_id = "sess-old"
     agent.shutdown_memory_provider = MagicMock()
     runner._agent_cache = {session_key: agent}
     return runner
@@ -159,7 +159,7 @@ async def test_reset_completes_when_cleanup_raises(caplog):
     def boom_cleanup(_agent):
         raise RuntimeError("cleanup blew up")
 
-    runner._cleanup_agent_resources = boom_cleanup
+    runner._release_evicted_agent_soft = boom_cleanup
 
     with caplog.at_level(logging.WARNING, logger="gateway.run"):
         result = await asyncio.wait_for(

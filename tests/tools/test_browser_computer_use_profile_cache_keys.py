@@ -29,7 +29,7 @@ def test_browser_exec_cache_key_differs_per_served_profile_and_is_legacy_when_un
     import tools.browser_use_cli as bu
 
     a, b = two_homes
-    assert bu._backend_cache_key("t1", "work") == "bu-named-work"
+    assert bu._backend_cache_key("t1", "work") != bu._backend_cache_key("t2", "work")
     assert bu._backend_cache_key(None) == "browser-exec-default"
     tok = _under(a)
     try:

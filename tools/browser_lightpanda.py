@@ -311,9 +311,13 @@ def reap_orphaned_lightpanda() -> int:
     except Exception:  # pragma: no cover - defensive
         return 0
 
+    from tools.browser_use_lifecycle import _backend_names
+    retained = _backend_names()
     reaped = 0
     for record_path in sorted(state_dir.glob("*.json")):
         session_name = record_path.stem
+        if session_name in retained:
+            continue
         try:
             record = json.loads(record_path.read_text(encoding="utf-8-sig"))
             if not isinstance(record, dict):
