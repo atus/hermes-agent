@@ -82,7 +82,7 @@ def _make_runner_with_cached_agent(close_fn):
     # Enable the cache-lock path (this is what the button callback exercises)
     runner._agent_cache_lock = threading.RLock()
     agent = MagicMock()
-    agent.release_clients = close_fn
+    agent.close = close_fn
     agent.session_id = "sess-old"
     agent.shutdown_memory_provider = MagicMock()
     runner._agent_cache = {session_key: agent}
@@ -159,7 +159,7 @@ async def test_reset_completes_when_cleanup_raises(caplog):
     def boom_cleanup(_agent):
         raise RuntimeError("cleanup blew up")
 
-    runner._release_evicted_agent_soft = boom_cleanup
+    runner._cleanup_agent_resources = boom_cleanup
 
     with caplog.at_level(logging.WARNING, logger="gateway.run"):
         result = await asyncio.wait_for(

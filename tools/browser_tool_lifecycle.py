@@ -713,7 +713,9 @@ def _force_reap_browser_session(task_id: str) -> None:
 
 def _cleanup_single_browser_session(task_id: str) -> None:
     """Reap a single browser session by its exact session key."""
-    from tools.browser_use_lifecycle import _stop_owned
+    from tools.browser_use_lifecycle import _stop_owned, _retained_backend
+    if _retained_backend(task_id):
+        return  # reset retains only this owner's durable browser, not other task resources
     _stop_owned(task_id)
     _cdp._stop_cdp_supervisor(task_id)  # close our WebSocket BEFORE the backend tears down the endpoint
 

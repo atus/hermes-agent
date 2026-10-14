@@ -118,7 +118,7 @@ class GatewaySessionCommandsMixin:
     # ------------------------------------------------------------------ /new, /reset
 
     async def _cleanup_old_agent_for_reset(self, session_key: str) -> None:
-        """Detach the old conversation's tools for resume; idle expiry owns teardown.
+        """Retain only owned browsers for resume; clean all unrelated agent resources.
 
         Client release stays off-loop and bounded, under the owning profile.
         """
@@ -127,9 +127,9 @@ class GatewaySessionCommandsMixin:
             return
 
         def detach():
-            from tools.browser_use_lifecycle import _detach_owner
-            _detach_owner(getattr(_old_agent, "session_id", None))
-            self._release_evicted_agent_soft(_old_agent)
+            from tools.browser_use_lifecycle import _retain_owner_browser
+            with _retain_owner_browser(getattr(_old_agent, "session_id", None)):
+                self._cleanup_agent_resources(_old_agent)
 
         try:
             await asyncio.wait_for(

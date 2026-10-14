@@ -89,6 +89,7 @@ def _write_record(path, record):
 _homes = set()
 _lease_fd: ContextVar[int | None] = ContextVar("harness_execution_lease_fd", default=None)
 _backend_release: ContextVar[str | None] = ContextVar("harness_backend_release", default=None)
+_retained_owner: ContextVar[str | None] = ContextVar("harness_retained_owner", default=None)
 _logger = logging.getLogger(__name__)
 
 
@@ -347,15 +348,38 @@ def _bind_backend(record, key, env):
     _write_record(path, record)
 
 
+def _owned_paths():
+    directory = Path(get_hermes_home()) / "cache" / "browser-use" / "owned"
+    return _state_dir().glob("*.json") if directory.exists() else ()
+
+
 def _has_owned_backend(key):
-    return any(_read_record(path).get("backend_key") == key for path in _state_dir().glob("*.json"))
+    return any(_read_record(path).get("backend_key") == key for path in _owned_paths())
+
+
+def _retained_backend(key):
+    owner = _retained_owner.get()
+    if not owner:
+        return False
+    return any(record.get("backend_key") == key and record["owner"] == owner
+               for record in (_read_record(path) for path in _owned_paths()))
+
+
+@contextlib.contextmanager
+def _retain_owner_browser(owner):
+    _detach_owner(owner)
+    token = _retained_owner.set(owner)
+    try:
+        yield
+    finally:
+        _retained_owner.reset(token)
 
 
 def _stop_owned(backend_key=None):
     if backend_key is not None and _backend_release.get() == backend_key:
         return  # native teardown is already under this record's lease, after harness stop
     errors = []
-    for index, path in enumerate(_state_dir().glob("*.json")):
+    for index, path in enumerate(_owned_paths()):
         if index >= 4096:
             break
         try:
@@ -379,7 +403,7 @@ def _idle_timeout():
 
 def _expire_profile():
     timeout = _idle_timeout()
-    for index, path in enumerate(_state_dir().glob("*.json")):
+    for index, path in enumerate(_owned_paths()):
         if index >= 4096:
             break
         try:
@@ -399,7 +423,7 @@ def _backend_names():
     names = set()
     for home in tuple(_homes):
         with _session_owner_scope("", owner_home=home):
-            for index, path in enumerate(_state_dir().glob("*.json")):
+            for index, path in enumerate(_owned_paths()):
                 if index >= 4096:
                     break
                 try:
@@ -414,7 +438,7 @@ def _backend_names():
 def _detach_owner(owner):
     if not owner:
         return
-    for index, path in enumerate(_state_dir().glob("*.json")):
+    for index, path in enumerate(_owned_paths()):
         if index >= 4096:
             break
         try:
