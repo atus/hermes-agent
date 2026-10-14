@@ -237,6 +237,33 @@ def test_untrusted_record_identity_is_rejected(changed):
         life._read_record(path)
 
 
+@pytest.mark.parametrize("replacement", [{"pid": 202, "start": 2}, {"pid": 101, "start": 2}])
+def test_rejected_generation_never_becomes_authority(monkeypatch, replacement):
+    original = {"pid": 101, "start": 1}
+    monkeypatch.setattr(life, "_transport", lambda record, operation: dict(original))
+    with life._execution({}, "owner", "generation") as record:
+        record["endpoint"] = "ws://127.0.0.1:47000/owned"
+    path = next(life._state_dir().glob("*.json"))
+
+    def changed(record, operation):
+        if operation == "stop":
+            assert {key: record[key] for key in original} == original
+            raise RuntimeError("generation changed")
+        return dict(replacement)
+
+    monkeypatch.setattr(life, "_transport", changed)
+    for _ in range(2):
+        with pytest.raises(RuntimeError, match="generation"):
+            with life._execution({}, "owner", "generation") as record:
+                life._reuse_endpoint(record, {})
+        persisted = life._read_record(path)
+        assert {key: persisted[key] for key in original} == original
+        assert persisted["cleanup"] == "retry"
+    with pytest.raises(RuntimeError, match="generation"):
+        life._stop_owned()
+    assert {key: life._read_record(path)[key] for key in original} == original
+
+
 def test_backend_names_are_owner_scoped():
     first = bu._backend_cache_key("owner-one", "research")
     assert first == bu._backend_cache_key("owner-one", "research")

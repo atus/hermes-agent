@@ -222,7 +222,14 @@ def _execution(env, owner, name):
             if record.pop("_executed", False):
                 record["last_execution"] = time.time()
             try:
-                record.update(_transport(record, "inspect"))
+                generation = _transport(record, "inspect")
+                if record.get("pid") and generation and any(
+                        generation.get(key) != record.get(key) for key in ("pid", "start")):
+                    raise RuntimeError("Harness generation changed; ownership retained")
+                record.update(generation)
+            except (RuntimeError, OSError, ValueError):
+                record["cleanup"] = "retry"
+                raise
             finally:
                 _write_record(path, record)
 
