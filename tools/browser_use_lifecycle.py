@@ -314,9 +314,11 @@ def _reuse_endpoint(record, env):
     if not generation:
         path = _state_dir() / f"{_record_id(record['home'], record['owner'], record['name'])}.json"
         _finish_record(path, record)  # fail closed if cloud cleanup or process death is unconfirmed
-        identity = {key: record[key] for key in ("version", "home", "owner", "name", "runtime")}
+        identity = {key: record[key] for key in ("version", "home", "owner", "name", "runtime", "backend_key")}
         record.clear()
         record.update(identity, cleanup="active", last_execution=time.time())
+        # Register fresh ownership before cold routing hands off native idle teardown.
+        _write_record(path, record)
         return False
     if generation.get("pid") != record["pid"] or generation.get("start") != record["start"]:
         raise RuntimeError("Retained harness generation is unavailable or changed; retry cleanup before reconnecting")
