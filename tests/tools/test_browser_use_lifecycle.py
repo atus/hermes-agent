@@ -136,6 +136,53 @@ def test_expired_resume_recreates_cold_before_renewing(monkeypatch):
         assert not record.get("harness_stopped")
 
 
+@pytest.mark.parametrize("backend", ["cloud", "local", "external"])
+def test_expired_backend_recreates_fresh_cache(monkeypatch, backend):
+    from types import SimpleNamespace
+    from tools import browser_tool as bt
+    from tools import browser_tool_session as sessions
+    from tools import browser_tool_cloud as cloud
+    from tools import browser_tool_lifecycle as worker
+
+    key = bu._backend_cache_key("saved", "cold")
+    old = {"session_name": "h_owned" if backend == "local" else "",
+           "bb_session_id": "cloud-old" if backend == "cloud" else None,
+           "cdp_url": "ws://127.0.0.1:47000/owned", "features": {}}
+    monkeypatch.setattr(bt, "_active_sessions", {key: old})
+    monkeypatch.setattr(bt, "_is_camofox_mode", lambda: False)
+    monkeypatch.setattr(bt, "_maybe_stop_recording", lambda key: None)
+    monkeypatch.setattr(sessions, "_local_backend_process_dead", lambda info: False)
+    monkeypatch.setattr(worker, "_session_has_expired", lambda info: False)
+    monkeypatch.setattr(bt, "_browser_session_backend", lambda key: SimpleNamespace(ensure_healthy=lambda: True))
+    monkeypatch.setattr(sessions, "_create_session_for_key", lambda *args: {**old, "bb_session_id": "cloud-new"})
+    monkeypatch.setattr(sessions._cdp, "_ensure_cdp_supervisor", lambda key: None)
+    monkeypatch.setattr(worker._cdp, "_stop_cdp_supervisor", lambda key: None)
+    monkeypatch.setattr(worker, "_stop_record", lambda record: None, raising=False)
+    events = []
+    monkeypatch.setattr(life, "_stop_record", lambda record: events.append("harness"))
+    monkeypatch.setattr(sessions, "_run_browser_command", lambda key, command, args, **kw: events.append(command))
+    monkeypatch.setattr(cloud, "_get_cloud_provider", lambda: SimpleNamespace(
+        name="probe", close_session=lambda sid: events.append(sid)))
+    monkeypatch.setattr(life.time, "time", lambda: 1000)
+    monkeypatch.setattr(bu, "_read_browser_cfg", lambda: {"inactivity_timeout": 300})
+    with life._execution({}, "saved", "cold") as record:
+        record.update(backend_key=key, backend_name=old["session_name"], endpoint=old["cdp_url"])
+        if backend == "cloud":
+            record.update(provider="probe", provider_id="cloud-old")
+    monkeypatch.setattr(life.time, "time", lambda: 2000)
+    with life._execution({}, "saved", "cold"):
+        fresh = sessions._get_session_info(key)
+        assert fresh is not old, "resume must not return a closed cached backend"
+        assert bt._active_sessions[key] is fresh
+        assert events[0] == "harness"
+        if backend == "cloud":
+            assert events.count("cloud-old") == 1
+        if backend == "local":
+            assert "close" in events, "owned local browser must stop before cold recreation"
+        if backend == "external":
+            assert "close" not in events, "external Chrome must never be closed"
+
+
 def test_missing_cloud_authority_retains_ownership():
     import sys
     dead = subprocess.Popen([sys.executable, "-c", "pass"])

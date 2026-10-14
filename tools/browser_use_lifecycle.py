@@ -88,6 +88,7 @@ def _write_record(path, record):
 
 _homes = set()
 _lease_fd: ContextVar[int | None] = ContextVar("harness_execution_lease_fd", default=None)
+_backend_release: ContextVar[str | None] = ContextVar("harness_backend_release", default=None)
 _logger = logging.getLogger(__name__)
 
 
@@ -275,13 +276,30 @@ def _finish_record(path, record):
 
 
 def _release_backend(record):
-    if not record.get("provider_id"):
+    key = record.get("backend_key")
+    if not key:
         return
+    from tools.browser_tool import _active_sessions, _cleanup_lock
     from tools.browser_tool_cloud import _get_cloud_provider
-    provider = _get_cloud_provider()
-    if provider is None or provider.name != record["provider"]:
-        raise RuntimeError("Owning browser provider is unavailable; retaining cleanup for retry")
-    provider.close_session(record["provider_id"])
+    from tools.browser_tool_lifecycle import _cleanup_single_browser_session, _forget_session_tracking
+    if record.get("provider_id"):
+        provider = _get_cloud_provider()
+        if provider is None or provider.name != record["provider"]:
+            raise RuntimeError("Owning browser provider is unavailable; retaining cleanup for retry")
+    with _cleanup_lock:
+        if key not in _active_sessions and (record.get("provider_id") or record.get("backend_name")):
+            _active_sessions[key] = {
+                "session_name": record.get("backend_name", ""),
+                "bb_session_id": record.get("provider_id"), "cdp_url": record.get("endpoint"),
+                "features": record.get("backend_features", {})}
+    token = _backend_release.set(key)
+    try:
+        if not record.get("backend_name") and not record.get("provider_id"):
+            _forget_session_tracking(key, session=True)  # external CDP: invalidate only, never close Chrome
+        else:
+            _cleanup_single_browser_session(key)
+    finally:
+        _backend_release.reset(token)
 
 
 def _reuse_endpoint(record, env):
@@ -316,6 +334,7 @@ def _bind_backend(record, key, env):
     record["backend_key"] = key
     if info:
         record["backend_name"] = info.get("session_name")
+        record["backend_features"] = info.get("features", {})
     if info.get("bb_session_id"):
         provider = _get_cloud_provider()
         if provider is None:
@@ -330,6 +349,8 @@ def _has_owned_backend(key):
 
 
 def _stop_owned(backend_key=None):
+    if backend_key is not None and _backend_release.get() == backend_key:
+        return  # native teardown is already under this record's lease, after harness stop
     errors = []
     for index, path in enumerate(_state_dir().glob("*.json")):
         if index >= 4096:
