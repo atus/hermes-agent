@@ -144,6 +144,8 @@ membership, and currency checks use the same declaration reader.
 PM prepares core requirements, enabled extras, and enabled plugin requirements
 together. It seeds resolution from the existing lock. Compatible transitive
 versions can change, but declared constraints and exact pins remain binding.
+Plugin workspaces constrain resolution to the installation's operating system;
+a missing wheel on another OS cannot block a local dependency sync.
 Each candidate gets a fresh workspace with explicit source, lock seed, and
 prepared environment inputs. The generated workspace and extended lock remain
 outside shipped source. Repair copies the recorded workspace and lock, including
