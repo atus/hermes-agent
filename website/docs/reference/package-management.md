@@ -144,6 +144,8 @@ membership, and currency checks use the same declaration reader.
 PM prepares core requirements, enabled extras, and enabled plugin requirements
 together. It seeds resolution from the existing lock. Compatible transitive
 versions can change, but declared constraints and exact pins remain binding.
+Plugin workspaces constrain resolution to the installation's operating system;
+a missing wheel on another OS cannot block a local dependency sync.
 Each candidate gets a fresh workspace with explicit source, lock seed, and
 prepared environment inputs. The generated workspace and extended lock remain
 outside shipped source. Repair copies the recorded workspace and lock, including
@@ -585,7 +587,9 @@ Every Python package Hermes itself depends on must be at least three days old
 when Hermes locks it (uv's `exclude-newer`, enforced by CI's lock check), so a
 freshly published, possibly compromised release cannot reach `uv.lock`. Users
 install from that lock, and installing or enabling a plugin never re-checks
-dates, so package mirrors that publish no upload times work. Set a mirror with `index-url` in `pip.conf`,
+dates, so package mirrors that publish no upload times work. The one exemption
+is CA trust stores (`certifi`): a release that distrusts a compromised CA is
+locked the day it ships, since waiting keeps the bad root trusted. Set a mirror with `index-url` in `pip.conf`,
 which Hermes passes to uv, or with `UV_INDEX_URL`.
 
 `hermes pm lock` is the one step that applies the check. Run against a mirror

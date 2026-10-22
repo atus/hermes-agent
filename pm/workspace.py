@@ -124,12 +124,19 @@ def _generate_pyproject(plugin_dirs: list[Path] | Mapping[Path, Path], root: Pat
                if _is_member_candidate(source)]
 
     if members:
+        import sys
         import tomllib
 
         import tomli_w
 
         document = tomllib.loads(core_text)
         uv_policy = document.setdefault("tool", {}).setdefault("uv", {})
+        # Plugin generations run only here; foreign-OS wheel gaps must not
+        # prevent a local security sync or evict an otherwise valid plugin.
+        host = f"sys_platform == '{sys.platform}'"
+        uv_policy["environments"] = [
+            f"({marker}) and {host}" for marker in uv_policy.get("environments", [host])
+        ]
         # Release age is checked when Hermes locks; users trust that lock (#135589).
         uv_policy.pop("exclude-newer", None)
         uv_policy.pop("exclude-newer-package", None)
